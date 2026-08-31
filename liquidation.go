@@ -245,9 +245,13 @@ func (s *Simulator) liquidateFully(key positionKey, m Metrics, ts int64) (Liquid
 // 这是「阶梯减仓」存在的意义，也是它与直接全平的区别所在。减掉的部分按破产价
 // 了结，其占用的保证金同比例损失。
 //
-// 注意：本路径尚未在真实强平中观察到。触发它需要一个跨越多个档位的大仓位，
-// 而实测用的是小资金仓位，落在首档、不会降档。公式依据 OKX 的阶梯档位规则，
-// 但未经实测验证，使用时请知悉。
+// **本路径已由一次真实的阶梯减仓确证**（FIL-USDT-SWAP 空头 50 万张、40 倍杠杆）：
+// 减仓量、盈亏、手续费、损失封顶与超额退回全部逐位对上，唯一的差异是罚金所用的
+// 维持保证金率——实测是【减仓后】的档位，此前按减仓前算，多收了 85.11。
+//
+// 真实序列是 部分强平(101) -> 全部强平(105) -> 穿仓补偿(108)：第一次减到一档上限
+// 后价格继续走，第二次才全平。两次的损失合计恰好等于仓位保证金，超出的 1.66
+// 由风险准备金退回，现金余额 balChg 全程为 0。
 func (s *Simulator) reduceToTier(key positionKey, m Metrics,
 	target refdata.PositionTier, ts int64) (Liquidation, error) {
 
@@ -273,9 +277,35 @@ func (s *Simulator) reduceToTier(key positionKey, m Metrics,
 	nom := notional(inst, cut, px)
 	pnl := realizedPnl(inst, pos.SignedPos(), cut, pos.AvgPx, px)
 	fee := nom.Mul(rate.Taker.Abs()).Neg()
-	penalty := nom.Mul(m.MMRRate).Neg()
-	// 被减掉的那部分所占用的保证金同比例损失
-	lost := pos.Margin.Mul(div(cut, pos.AbsPos()))
+
+	// 罚金按【减仓后】所在档位的维持保证金率算，不是减仓前的。
+	//
+	// 这一条由一次真实的阶梯减仓确证：FIL-USDT-SWAP 空头 50 万张（二档 mmr 0.015）
+	// 减掉 25 万张，名义 17022.5，实际罚金 170.225 —— 反推率恰为 0.01，即减仓后
+	// 25 万张所在的一档。按减仓前的 0.015 会算成 255.34，多出 85.11。
+	//
+	// 同一样本无法区分另外两种解释：「被减掉的那部分自己查档」（25 万张也落在一档）
+	// 与「目标档位的率」（正是 target）。三者在这里给出同一个数，要区分得有一次
+	// 从三档减到二档、而被减部分落在一档的样本。此处取 target.MMR——它与阶梯减仓
+	// 的语义最直白：减到哪一档，就按哪一档收。见 docs/okx-rules.md §7。
+	penalty := nom.Mul(target.MMR).Neg()
+
+	// 保证金按【实际发生的盈亏、手续费与罚金】扣减，**不是按张数比例释放**。
+	//
+	// 普通的部分平仓才是比例释放（实测 624.705284 平掉四分之一释放 156.176321），
+	// 而强平减仓不把任何东西释放回现金——它只是把损失从仓位保证金里扣掉，
+	// balChg 全程为 0。
+	//
+	// 真实事件确证：保证金 843.234041 的仓位第一次减仓后 posBal 变为 506.678611，
+	// 差值恰为 pnl+fee+罚金 = -336.555430；按「减半」得出的 421.617 相差 85.06。
+	charge := pnl.Add(fee).Add(penalty)
+	lost := charge.Neg()
+	var excess decimal.Decimal
+	if remain := pos.Margin.Add(charge); remain.IsNegative() {
+		// 扣穿了：持仓方的损失封顶为保证金，超出部分由风险准备金承担并退回
+		excess = remain.Neg()
+		lost = pos.Margin
+	}
 
 	pos.Pos = signedToOKX(
 		pos.SignedPos().Sub(signOf(pos.SignedPos()).Mul(cut)), pos.PosSide, s.cfg.PosMode)
@@ -292,7 +322,7 @@ func (s *Simulator) reduceToTier(key positionKey, m Metrics,
 	}
 	return Liquidation{
 		InstID: key.instID, PosSide: key.posSide, MgnMode: types.MgnIsolated,
-		Kind: LiqPartial, Sz: cut, Px: px, Pnl: pnl, Fee: fee, Penalty: penalty, Loss: lost,
+		Kind: LiqPartial, Sz: cut, Px: px, Pnl: pnl, Fee: fee, Penalty: penalty, Loss: lost, Excess: excess,
 		MgnRatioBefore: m.MgnRatio, MgnRatioAfter: after.MgnRatio,
 		TierBefore: m.Tier, TierAfter: after.Tier, Ts: ts,
 	}, nil

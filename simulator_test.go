@@ -262,8 +262,8 @@ func TestSetLeverageRespectsTierCap(t *testing.T) {
 
 	err := s.SetLeverage("BTC-USDT-SWAP", types.MgnIsolated, types.PosNet,
 		decimal.NewFromInt(1000))
-	if !okxerr.HasCode(err, okxerr.CodeParamError) {
-		t.Errorf("超过档位上限的杠杆错误 = %v，期望 51000", err)
+	if !okxerr.HasCode(err, okxerr.CodeLeverTooHigh) {
+		t.Errorf("超过档位上限的杠杆错误 = %v，期望 59102", err)
 	}
 }
 

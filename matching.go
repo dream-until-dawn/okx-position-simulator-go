@@ -225,6 +225,15 @@ func (s *Simulator) PlaceOrder(o Order) (PlaceResult, error) {
 		return PlaceResult{}, err
 	}
 
+	// 当前杠杆下有一个最大持仓量，判据含【同方向的开仓挂单】——挂单本身就要占额度，
+	// 所以这里也得卡，而不是等到成交时才发现。见 checkPosLimitAtLever。
+	mgnMode, _ := o.TdMode.MgnMode()
+	if openSz := s.openSizeOf(o, side); openSz.IsPositive() {
+		if err := s.checkPosLimitAtLever(inst, mgnMode, side, o.Side, openSz); err != nil {
+			return PlaceResult{}, err
+		}
+	}
+
 	last := s.last[o.InstID]
 	fillPx, canFill := marketable(o, last)
 
@@ -445,4 +454,15 @@ func (s *Simulator) triggeredOrders(b Bar) []Order {
 		return out[i].OrdID < out[j].OrdID
 	})
 	return out
+}
+
+// openSizeOf 返回一笔委托中属于【开仓】的张数。
+//
+// 与现有持仓反向的部分是平仓，不占最大持仓量的额度；超出持仓量的那一段才是开仓。
+func (s *Simulator) openSizeOf(o Order, side types.PosSide) decimal.Decimal {
+	openSz, _ := s.splitOrderSize(OrderReq{
+		InstID: o.InstID, TdMode: o.TdMode, Side: o.Side,
+		PosSide: o.PosSide, Sz: o.Sz, Px: o.Px,
+	}, side)
+	return openSz
 }

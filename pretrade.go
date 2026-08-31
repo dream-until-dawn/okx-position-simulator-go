@@ -186,6 +186,14 @@ func (s *Simulator) MaxSize(instID string, tdMode types.TdMode, px decimal.Decim
 		MaxBuy:  maxSizeAt(inst, bal.AvailBal, px, lever, taker, lossBuy),
 		MaxSell: maxSizeAt(inst, bal.AvailBal, px, lever, taker, lossSell),
 	}
+
+	// 资金只是两条约束之一。当前杠杆下另有一个最大持仓量，实测 OKX 的 max-size
+	// 给的是两者取小：25 倍杠杆下按资金能开 33 万张，而杠杆那条线只允许 6.6 万张，
+	// OKX 返回 6.6 万。只算资金会在高杠杆下高估——而高杠杆恰恰是杠杆这条线最紧的
+	// 时候，也就是最容易算错的时候。
+	if err := s.capByPosLimit(&m, inst, mgnMode); err != nil {
+		return MaxSize{}, err
+	}
 	// 保守的那一侧还要与按标记价算的结果取较小者，是买是卖取决于合约类型。
 	if markPx.IsPositive() && !markPx.Equal(px) {
 		if conservativeSide(inst) == types.Buy {
@@ -404,4 +412,40 @@ func (s *Simulator) orderFreeze(ccy string) (margin, fee decimal.Decimal) {
 		fee = fee.Add(o.Cost.Fee)
 	}
 	return margin, fee
+}
+
+// capByPosLimit 把「当前杠杆下的最大持仓量」这条约束叠加到可开张数上。
+//
+// 剩余额度 = 上限 − 现有持仓 − 同方向的开仓挂单，与 51004 的判据同源。
+func (s *Simulator) capByPosLimit(m *MaxSize, inst refdata.Instrument,
+	mgnMode types.MgnMode) error {
+
+	for _, c := range []struct {
+		side types.Side
+		out  *decimal.Decimal
+	}{{types.Buy, &m.MaxBuy}, {types.Sell, &m.MaxSell}} {
+		posSide := types.PosNet
+		if s.cfg.PosMode == types.LongShortMode {
+			posSide = types.PosLong
+			if c.side == types.Sell {
+				posSide = types.PosShort
+			}
+		}
+		limit, err := s.maxPosAtLever(inst, mgnMode, posSide)
+		if err != nil {
+			return err
+		}
+		if !limit.IsPositive() {
+			continue
+		}
+		room := limit.Sub(s.sameSideExposure(inst.InstID, posSide, c.side))
+		room = refdata.FloorToStep(room, inst.LotSz)
+		if room.IsNegative() {
+			room = decimal.Zero
+		}
+		if room.LessThan(*c.out) {
+			*c.out = room
+		}
+	}
+	return nil
 }

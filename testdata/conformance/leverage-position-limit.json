@@ -1,0 +1,194 @@
+{
+  "_provenance": {
+    "用途": "OKX 模拟盘实测：杠杆与最大持仓量的关系，以及超限时的错误码",
+    "账户模式": "acctLv=2，posMode=long_short_mode，逐仓",
+    "标的": "MASK-USDT-SWAP，选它是因为一档顶格杠杆开满只要 8.3 USDT 保证金"
+  },
+  "_calibrated": {
+    "最大持仓量": "= 满足 tier.MaxLever >= 当前杠杆 的【最高】档位的 maxSz。实测 50x->1000、40x->2500、25x->66000，三个都与 max-size 接口逐位相同",
+    "判据含挂单": "持仓 + 同方向【开仓】挂单 + 本单 ≤ 上限。实测持仓 600 张、同方向挂单 300 张时，再挂 200 张（合计 1100 > 1000）被 51004 拒绝，改挂 100 张（恰好 1000）通过",
+    "跨档加仓": "一档顶格杠杆（50x）开满 1000 张后再加 1 张，被 51004 拒绝——不是放行后降档，而是【根本下不出这一单】",
+    "超上限杠杆": "59102 Leverage exceeds the maximum limit",
+    "提杠杆致超限": "59247 High leverage causes current position to exceed the maximum position size limit under this leverage。OKX 拒绝改杠杆，而不是把仓位强制减掉",
+    "max-size 取小": "25 倍杠杆下按资金能开 33 万张，按杠杆只允许 6.6 万张，OKX 返回 6.6 万——两条约束取小"
+  },
+  "instrument": {
+    "alias": "",
+    "auctionEndTime": "",
+    "baseCcy": "",
+    "category": "1",
+    "contTdSwTime": "",
+    "ctMult": "1",
+    "ctType": "linear",
+    "ctVal": "1",
+    "ctValCcy": "MASK",
+    "expTime": "",
+    "floatPxLmtPct": "0.015",
+    "freq": "",
+    "futureSettlement": false,
+    "groupId": "4",
+    "initPxLmtPct": "0.06",
+    "instCategory": "1",
+    "instFamily": "MASK-USDT",
+    "instId": "MASK-USDT-SWAP",
+    "instIdCode": 2021032621930493,
+    "instType": "SWAP",
+    "lever": "50",
+    "listTime": "1628670049650",
+    "longPosRemainingQuota": "",
+    "lotSz": "1",
+    "maxIcebergSz": "100000000.0000000000000000",
+    "maxLmtAmt": "20000000",
+    "maxLmtSz": "100000000",
+    "maxMktAmt": "",
+    "maxMktSz": "45000",
+    "maxPlatOICoinLmt": "",
+    "maxPlatOILmt": "",
+    "maxPxLmtPct": "0.3",
+    "maxStopSz": "45000",
+    "maxTriggerSz": "100000000.0000000000000000",
+    "maxTwapSz": "100000000.0000000000000000",
+    "method": "",
+    "minSz": "1",
+    "openType": "fix_price",
+    "optType": "",
+    "posLmtAmt": "350000",
+    "posLmtPct": "35",
+    "preMktSwTime": "",
+    "quoteCcy": "",
+    "ruleType": "normal",
+    "seriesId": "",
+    "settleCcy": "USDT",
+    "shortPosRemainingQuota": "",
+    "state": "live",
+    "stk": "",
+    "tickSz": "0.0001",
+    "tradeQuoteCcyList": [],
+    "uly": "MASK-USDT",
+    "upcChg": []
+  },
+  "tiers": [
+    {
+      "baseMaxLoan": "",
+      "imr": "0.02",
+      "instFamily": "MASK-USDT",
+      "instId": "",
+      "maxLever": "50",
+      "maxSz": "1000",
+      "minSz": "0",
+      "mmr": "0.005",
+      "optMgnFactor": "0",
+      "quoteMaxLoan": "",
+      "tier": "1",
+      "uly": "MASK-USDT"
+    },
+    {
+      "baseMaxLoan": "",
+      "imr": "0.025",
+      "instFamily": "MASK-USDT",
+      "instId": "",
+      "maxLever": "40",
+      "maxSz": "2500",
+      "minSz": "1001",
+      "mmr": "0.0075",
+      "optMgnFactor": "0",
+      "quoteMaxLoan": "",
+      "tier": "2",
+      "uly": "MASK-USDT"
+    },
+    {
+      "baseMaxLoan": "",
+      "imr": "0.03",
+      "instFamily": "MASK-USDT",
+      "instId": "",
+      "maxLever": "33.33",
+      "maxSz": "22000",
+      "minSz": "2501",
+      "mmr": "0.01",
+      "optMgnFactor": "0",
+      "quoteMaxLoan": "",
+      "tier": "3",
+      "uly": "MASK-USDT"
+    },
+    {
+      "baseMaxLoan": "",
+      "imr": "0.035",
+      "instFamily": "MASK-USDT",
+      "instId": "",
+      "maxLever": "28.57",
+      "maxSz": "44000",
+      "minSz": "22001",
+      "mmr": "0.015",
+      "optMgnFactor": "0",
+      "quoteMaxLoan": "",
+      "tier": "4",
+      "uly": "MASK-USDT"
+    },
+    {
+      "baseMaxLoan": "",
+      "imr": "0.04",
+      "instFamily": "MASK-USDT",
+      "instId": "",
+      "maxLever": "25",
+      "maxSz": "66000",
+      "minSz": "44001",
+      "mmr": "0.02",
+      "optMgnFactor": "0",
+      "quoteMaxLoan": "",
+      "tier": "5",
+      "uly": "MASK-USDT"
+    },
+    {
+      "baseMaxLoan": "",
+      "imr": "0.045",
+      "instFamily": "MASK-USDT",
+      "instId": "",
+      "maxLever": "22.22",
+      "maxSz": "88000",
+      "minSz": "66001",
+      "mmr": "0.025",
+      "optMgnFactor": "0",
+      "quoteMaxLoan": "",
+      "tier": "6",
+      "uly": "MASK-USDT"
+    }
+  ],
+  "byLever": [
+    {
+      "lever": "50",
+      "maxPos": "1000"
+    },
+    {
+      "lever": "40",
+      "maxPos": "2500"
+    },
+    {
+      "lever": "25",
+      "maxPos": "66000"
+    }
+  ],
+  "errorCodes": {
+    "超上限杠杆": "59102",
+    "下单超最大持仓量": "51004",
+    "提杠杆致现有持仓超限": "59247"
+  },
+  "observed": [
+    {
+      "场景": "50x 开满一档 1000 张",
+      "结果": "成功，mmr 率 0.005（一档）"
+    },
+    {
+      "场景": "再加 1 张（跨到二档）",
+      "结果": "51004 拒绝",
+      "报文": "the sum of current order size, position quantity in the same direction, and pending orders in the same direction can't be more than 1,000(contracts) which is the maximum position amount under current leverage"
+    },
+    {
+      "场景": "持仓 600 + 同方向挂单 300，再挂 200",
+      "结果": "51004 拒绝（合计 1100 > 1000）"
+    },
+    {
+      "场景": "持仓 600 + 同方向挂单 300，再挂 100",
+      "结果": "成功（合计恰好 1000）"
+    }
+  ]
+}

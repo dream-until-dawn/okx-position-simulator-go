@@ -165,14 +165,86 @@ func (s *Simulator) SetLeverage(instID string, mgnMode types.MgnMode,
 		return err
 	}
 	if max := tbl.MaxLeverage(); lever.GreaterThan(max) {
-		return okxerr.New(okxerr.CodeParamError,
+		return okxerr.New(okxerr.CodeLeverTooHigh,
 			"lever: %s 的杠杆 %s 超过上限 %s", instID, lever, max)
 	}
 	side, err := s.normalizePosSide(posSide)
 	if err != nil {
 		return err
 	}
+
+	// 提高杠杆会压低最大持仓量，现有持仓与同方向挂单可能一下子就超了。
+	// 实测 OKX 此时返回 59247 并拒绝改杠杆，而不是把仓位强制减掉。
+	if limit := tbl.MaxSizeAt(lever); limit.IsPositive() {
+		have := s.sameSideExposure(instID, side, openSideOf(side))
+		if have.GreaterThan(limit) {
+			return okxerr.New(okxerr.CodeLeverExceedsPosLimit,
+				"%s %s：现有持仓与同方向挂单合计 %s 张，超过 %s 倍杠杆下的最大持仓量 %s 张"+
+					"——请先减仓或改用更低的杠杆",
+				instID, side, have, lever, limit)
+		}
+	}
+	// 逐仓改杠杆会连带调整仓位保证金，见 retuneIsolatedMargin。
+	if mgnMode == types.MgnIsolated {
+		if err := s.retuneIsolatedMargin(instID, side, lever); err != nil {
+			return err
+		}
+	}
 	s.lever[leverageKey{instID, mgnMode, side}] = lever
+
+	// 已有仓位的 Lever 字段也要跟着改——实测 OKX 改完之后仓位返回的就是新杠杆。
+	// 不改的话，初始保证金、收益率、强平价这些依赖它的量全都停在旧值上，
+	// 而设定值与仓位值悄悄分了岔。
+	key := positionKey{instID, side}
+	if pos, ok := s.pos[key]; ok && pos.MgnMode == mgnMode && !pos.IsEmpty() {
+		pos.Lever = lever
+		s.pos[key] = pos
+	}
+	return nil
+}
+
+// retuneIsolatedMargin 在改杠杆时把逐仓仓位的保证金调到位。
+//
+// 规则由六次实测确定（SOL-USDT-SWAP，10x 与 20/8/4/3/6/15 之间来回改）：
+//
+//	改后权益（保证金 + 未实现盈亏）≥ 按新杠杆算的初始保证金  ->  什么都不动
+//	不足                                                  ->  从现金补足到恰好相等
+//
+// 也就是说：**降低杠杆要从现金补保证金，提高杠杆什么都不退。** 后半句容易想反——
+// 提高杠杆确实让所需保证金变小，但 OKX 不把多出来的那部分退回现金，仓位就那么
+// 超额担保着。三次提高杠杆（10->20、3->6、6->15）实测保证金与现金分文未动。
+//
+// 补足额按【开仓均价】算所需保证金，与「减保证金的下限」是同一条规则的两面：
+// 那边是不许减到权益低于它，这边是改杠杆后要把权益抬到它。
+//
+// 精度：两次无标记价漂移的样本（8x->4x、4x->3x）差 1.1e-13 与 2.0e-14。
+//
+// 全仓不走这条路：保证金从未离开现金，改杠杆只改变被占用的 imr，实测现金分文不动，
+// 双向都可以自由改。
+func (s *Simulator) retuneIsolatedMargin(instID string, side types.PosSide,
+	lever decimal.Decimal) error {
+
+	pos, ok := s.pos[positionKey{instID, side}]
+	if !ok || pos.IsEmpty() || pos.MgnMode != types.MgnIsolated {
+		return nil
+	}
+	inst, err := s.cfg.RefData.Instrument(instID)
+	if err != nil {
+		return err
+	}
+	need := initialMargin(inst, pos.AbsPos(), pos.AvgPx, lever)
+	upl := unrealizedPnl(inst, pos.SignedPos(), pos.AvgPx, s.markOf(instID, pos.AvgPx))
+	topUp := need.Sub(pos.Margin.Add(upl))
+	if !topUp.IsPositive() {
+		return nil
+	}
+	if avail := s.cash[inst.SettleCcy]; avail.LessThan(topUp) {
+		return newShortfallError(inst.SettleCcy, avail, topUp,
+			"降低杠杆需要补足保证金")
+	}
+	s.cash[inst.SettleCcy] = s.cash[inst.SettleCcy].Sub(topUp)
+	pos.Margin = pos.Margin.Add(topUp)
+	s.pos[positionKey{instID, side}] = pos
 	return nil
 }
 
@@ -275,6 +347,12 @@ func (s *Simulator) Fill(f Fill) (FillResult, error) {
 	}
 
 	res := applyFill(pos, f, inst, feeRate, s.cfg.PosMode)
+
+	// 当前杠杆下有一个最大持仓量，超了 OKX 会直接拒单（51004）。
+	// 放行会让模拟器走到一个真实账户上不可能存在的状态，见 checkPosLimitAtLever。
+	if err := s.checkPosLimitAtLever(inst, mgnMode, side, f.Side, res.OpenedSz); err != nil {
+		return FillResult{}, err
+	}
 
 	// 开仓部分的名义价值按成交价计——保证金是开仓那一刻定下的，
 	// 与随后的标记价变动无关。

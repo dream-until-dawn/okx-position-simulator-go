@@ -195,6 +195,27 @@ func (t *TierTable) MaxSize() decimal.Decimal {
 	return t.Tiers[len(t.Tiers)-1].MaxSz
 }
 
+// MaxSizeAt 返回在给定杠杆下允许的最大持仓量。
+//
+// 档位表的杠杆上限逐档递减：仓位越大，允许的杠杆越低。反过来看就是——**选定了
+// 杠杆，也就选定了持仓量的天花板**：能用该杠杆的最高那一档，其 maxSz 即为上限。
+//
+// 实测确认（MASK-USDT-SWAP，一档 [0,1000] 杠杆≤50、二档 [1001,2500] 杠杆≤40、
+// 三档 [2501,22000] 杠杆≤33.33）：
+//
+//	50 倍 -> 1000    40 倍 -> 2500    25 倍 -> 66000
+//
+// 三个都与 OKX 的 max-size 接口逐位相同。杠杆高于第一档上限时返回零。
+func (t *TierTable) MaxSizeAt(lever decimal.Decimal) decimal.Decimal {
+	var out decimal.Decimal
+	for _, tr := range t.Tiers {
+		if tr.MaxLever.GreaterThanOrEqual(lever) {
+			out = tr.MaxSz
+		}
+	}
+	return out
+}
+
 // MaxLeverage 返回该品种的最高可用杠杆（第一档的 maxLever）。
 func (t *TierTable) MaxLeverage() decimal.Decimal {
 	if len(t.Tiers) == 0 {
