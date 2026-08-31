@@ -279,13 +279,13 @@ func (s *Simulator) Fill(f Fill) (FillResult, error) {
 	// 支撑这笔成交。该委托自身的冻结要排除在外——它正在转化为本次成交的保证金，
 	// 若把它也算作占用，一笔本该成功的成交会被自己的冻结挡下。
 	//
-	// 可用余额取自 Balance，逐仓与全仓的差异已在那里算清；只有逐仓持仓时它退化
-	// 为 cashBal − 挂单占用，与标定逐仓时所得的形态一致。
-	bal, err := s.Balance(inst.SettleCcy)
+	// 可用余额与 Balance.AvailBal 同一个口径，只是不去顺带算那些用不上的项，
+	// 见 availBalance。只有逐仓持仓时它退化为 cashBal − 挂单占用，与标定逐仓时
+	// 所得的形态一致。
+	avail, err := s.availBalance(inst.SettleCcy)
 	if err != nil {
 		return FillResult{}, err
 	}
-	avail := bal.AvailBal
 	if f.OrdID != "" {
 		if p, ok := s.pending[f.OrdID]; ok {
 			avail = avail.Add(p.Cost.Fee)

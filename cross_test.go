@@ -686,3 +686,96 @@ func maxSizeConformance(t *testing.T, name string) {
 		})
 	}
 }
+
+// TestAvailBalanceAgreesWithBalance 锁定两条可用余额的算法永远一致。
+//
+// Fill 的资金校验走 availBalance 这条快路径，它省掉了查档与强平价；Balance 走完整
+// 那条。两者若哪天分岔，症状会极其难查：一笔成交在校验时算得起、落账后余额却是负的。
+func TestAvailBalanceAgreesWithBalance(t *testing.T) {
+	fx := loadCrossFixture(t)
+	snap := crossSnapshot(t, fx)
+
+	cases := []struct {
+		name string
+		set  func(t *testing.T, s *Simulator)
+	}{
+		{"空账户", func(t *testing.T, s *Simulator) {}},
+		{"单个逐仓仓位", func(t *testing.T, s *Simulator) {
+			putPos(t, s, "ETH-USDT-SWAP", types.MgnIsolated, types.PosLong, "2", "2445", "10", "489")
+		}},
+		{"单个全仓仓位", func(t *testing.T, s *Simulator) {
+			putPos(t, s, "ETH-USDT-SWAP", types.MgnCross, types.PosLong, "2", "2445", "10", "")
+		}},
+		{"全仓多空并存", func(t *testing.T, s *Simulator) {
+			putPos(t, s, "GRASS-USDT-260911", types.MgnCross, types.PosLong, "7000", "0.359", "20", "")
+			putPos(t, s, "GRASS-USDT-260911", types.MgnCross, types.PosShort, "7000", "0.359", "20", "")
+		}},
+		{"逐仓全仓混合", func(t *testing.T, s *Simulator) {
+			putPos(t, s, "ETH-USDT-SWAP", types.MgnIsolated, types.PosLong, "2", "2445", "10", "489")
+			putPos(t, s, "GRASS-USDT-260911", types.MgnCross, types.PosLong, "7000", "0.359", "20", "")
+			putPos(t, s, "GRASS-USDT-260925", types.MgnCross, types.PosShort, "5000", "0.359", "20", "")
+		}},
+		{"带全仓挂单", func(t *testing.T, s *Simulator) {
+			putPos(t, s, "GRASS-USDT-260911", types.MgnCross, types.PosLong, "7000", "0.359", "20", "")
+			if _, err := s.PlaceOrder(Order{
+				OrdID: "p1", InstID: "GRASS-USDT-260911", TdMode: types.TdCross,
+				Side: types.Buy, PosSide: types.PosLong, OrdType: types.OrdLimit,
+				Px: dec("0.25"), Sz: dec("5000"),
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"带逐仓挂单", func(t *testing.T, s *Simulator) {
+			if _, err := s.PlaceOrder(Order{
+				OrdID: "p2", InstID: "ETH-USDT-SWAP", TdMode: types.TdIsolated,
+				Side: types.Buy, PosSide: types.PosLong, OrdType: types.OrdLimit,
+				Px: dec("2000"), Sz: dec("2"),
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s, err := New(Config{PosMode: types.LongShortMode, RefData: snap})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Deposit("USDT", dec("100000")); err != nil {
+				t.Fatal(err)
+			}
+			c.set(t, s)
+
+			fast, err := s.availBalance("USDT")
+			if err != nil {
+				t.Fatalf("快路径失败: %v", err)
+			}
+			b, err := s.Balance("USDT")
+			if err != nil {
+				t.Fatalf("完整路径失败: %v", err)
+			}
+			if !fast.Equal(b.AvailBal) {
+				t.Errorf("availBalance = %s，Balance.AvailBal = %s，两条路径必须一致",
+					fast, b.AvailBal)
+			}
+		})
+	}
+}
+
+func putPos(t *testing.T, s *Simulator, instID string, mgn types.MgnMode,
+	side types.PosSide, sz, avgPx, lever, margin string) {
+
+	t.Helper()
+	p := Position{
+		InstID: instID, MgnMode: mgn, PosSide: side,
+		Pos: dec(sz), AvgPx: dec(avgPx), Lever: dec(lever),
+	}
+	if margin != "" {
+		p.Margin = dec(margin)
+	}
+	if err := s.SetPosition(p); err != nil {
+		t.Fatalf("置入仓位失败: %v", err)
+	}
+	s.SetMark(instID, dec(avgPx))
+}
