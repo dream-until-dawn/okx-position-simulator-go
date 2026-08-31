@@ -7,9 +7,10 @@
 
 撮合、行情、订单簿由使用者的回测引擎负责——它们缺的恰恰是这台「OKX 记账机」。
 
-> **状态：v0.1.0 —— 规则数据层已就绪，仓位核算尚未开始。**
-> 当前可用的是合约规格、档位表、费率与自动拉取；`Simulator` 门面将在 v0.2.0 落地。
-> 详见 [版本排期](docs/roadmap.md)。
+> **状态：v0.2.0 开发中 —— 逐仓永续的仓位核算已可用。**
+> 已支持开平加减仓与反手、已实现/未实现盈亏、手续费、保证金与全套风险指标
+> （维持保证金、保证金率、强平价、破产价）、逐仓账户资金流转。
+> 全仓、双向持仓、资金费与强平引擎在后续版本，详见 [版本排期](docs/roadmap.md)。
 
 ## 安装
 
@@ -21,6 +22,35 @@ go get github.com/dream-until-dawn/okx-position-simulator-go
 `net/http` 被隔离在 `refdata/live` 子包，用不到就不会被引入。
 
 ## 快速开始
+
+```go
+sim, _ := okxsim.New(okxsim.Config{
+    PosMode:      types.NetMode,
+    RefData:      refdata.MustEmbedded(),
+    DefaultLever: decimal.RequireFromString("5"),
+})
+sim.Deposit("USDT", decimal.RequireFromString("10000"))
+
+// 灌入一笔成交。撮合由使用者的回测引擎负责，这里只管记账。
+r, _ := sim.Fill(okxsim.Fill{
+    InstID: "BTC-USDT-SWAP", TdMode: types.TdIsolated,
+    Side: types.Buy, PosSide: types.PosNet,
+    Sz: d("4"), Px: d("78000"), ExecType: types.Taker, Ts: ts,
+})
+// r.After.Margin = 624   r.Fee = -1.56
+
+sim.SetMark("BTC-USDT-SWAP", d("77000"))
+m, _ := sim.MetricsOf("BTC-USDT-SWAP", types.PosNet)
+// m.UPL = -40   m.MMR = 12.32   m.MgnRatio = 42.1356   m.LiqPx / m.BkPx
+
+b, _ := sim.Balance("USDT")
+// b.CashBal = 9374.44   b.IsoEq = 584   b.Eq = 9958.44
+```
+
+`SetMark` 只更新价格、不触发任何风控——资金费结算与强平检查由 `Advance` 按时钟
+推进（v0.4.0），这样多个合约在同一时刻的更新顺序就不会影响结果。
+
+## 规则数据
 
 零配置：内置快照随库分发，不联网即可使用。
 
