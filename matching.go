@@ -158,6 +158,27 @@ func marketable(o Order, last decimal.Decimal) (decimal.Decimal, bool) {
 	return decimal.Zero, false
 }
 
+// IndexPx 返回某合约当前的指数价；未设置过时为零。
+func (s *Simulator) IndexPx(instID string) decimal.Decimal { return s.index[instID] }
+
+// SetIndexPx 设置某合约的指数价。
+//
+// 只有 triggerPxType 为 index 的算法委托用得上它。单独给一个设置方法，是因为
+// 指数价与最新价、标记价一样是三条独立的行情——本库不拿其中一条去顶替另一条，
+// 那会让按指数价触发的委托在一个错误的价位上被扫掉。
+//
+// Advance 里给了 Bar.IdxPx 时会自动写入，无需再调用本方法。
+func (s *Simulator) SetIndexPx(instID string, px decimal.Decimal) error {
+	if instID == "" {
+		return okxerr.New(okxerr.CodeParamEmpty, "instId 不能为空")
+	}
+	if !px.IsPositive() {
+		return okxerr.New(okxerr.CodeParamError, "idxPx: 指数价须为正数，实为 %s", px)
+	}
+	s.index[instID] = px
+	return nil
+}
+
 // PlaceOrder 下单。
 //
 // 立即可成交的委托当场成交并按 taker 计费；否则挂入簿中并冻结资金，

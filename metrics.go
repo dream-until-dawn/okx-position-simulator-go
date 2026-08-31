@@ -30,6 +30,16 @@ type Metrics struct {
 	BePx     decimal.Decimal // 盈亏平衡价，对应 OKX 的 bePx
 	Tier     int             // 所处档位
 
+	// UplLastPx / UplRatioLastPx 是按【最新成交价】而非标记价算出的浮盈与收益率。
+	//
+	// OKX 两套都给。强平判据用的是标记价那套（UPL / UPLRatio），但回测通常以成交价
+	// 撮合，与回测口径对得上的是这一套。两者在插针时能差出很多——实测同一仓位
+	// upl 为 -34.50 而 uplLastPx 为 +0.50，一亏一赚。
+	//
+	// 未设置过最新价时为零。
+	UplLastPx      decimal.Decimal
+	UplRatioLastPx decimal.Decimal
+
 	// HasPosition 报告这组指标是否来自一个真实存在的仓位。
 	//
 	// 不能拿 MgnRatio 是否为零来代替它：权益被亏损或资金费耗尽时保证金率同样是

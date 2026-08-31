@@ -374,6 +374,14 @@ func (s *Simulator) MetricsOf(instID string, posSide types.PosSide) (Metrics, er
 	}
 	m := ComputeMetrics(pos, inst, tier, s.markOf(instID, pos.AvgPx), rate.Taker)
 
+	// 按最新成交价的那一套浮盈另算：ComputeMetrics 是纯函数，拿不到行情表。
+	if lastPx := s.last[instID]; lastPx.IsPositive() && !pos.IsEmpty() {
+		m.UplLastPx = unrealizedPnl(inst, pos.SignedPos(), pos.AvgPx, lastPx)
+		if openIM := initialMargin(inst, pos.AbsPos(), pos.AvgPx, pos.Lever); !openIM.IsZero() {
+			m.UplRatioLastPx = div(m.UplLastPx, openIM)
+		}
+	}
+
 	// 全仓的权益与保证金率是结算币种级的，单个仓位算不出来。
 	if pos.MgnMode == types.MgnCross {
 		cm, err := s.CrossMetricsOf(inst.SettleCcy)

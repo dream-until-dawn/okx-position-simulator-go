@@ -341,3 +341,98 @@ func TestCrossPositionViewFieldShape(t *testing.T) {
 		t.Errorf("没有逐仓持仓时 isoEq = %q，应为 0", b.IsoEq)
 	}
 }
+
+// TestPositionViewCoversMeasuredFieldShape 锁定视图里「零」与「空串」的区分。
+//
+// OKX 两者含义不同，而且并不一致：仓位的 liqPenalty / pnl / fundingFee 没有时是
+// "0"，imr / liqPx 没有时是空串；余额的 imr / mmr 是 "0"，mgnRatio 却是空串。
+// 早先一律按「零就留空」处理，字段级对拍一跑就露馅了——这条测试把当时的教训钉住。
+func TestPositionViewCoversMeasuredFieldShape(t *testing.T) {
+	s := newSim(t, types.NetMode)
+	mustFill(t, s, netFill(types.Buy, "4", "78000"))
+
+	views, err := s.PositionViews()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := views[0]
+	for name, got := range map[string]string{
+		"liqPenalty": v.LiqPenalty, "pnl": v.Pnl, "fundingFee": v.FundingFee,
+	} {
+		if got == "" {
+			t.Errorf("%s 没有值时 OKX 给的是 \"0\" 而非空串，实为空串", name)
+		}
+	}
+	if v.Imr != "" {
+		t.Errorf("逐仓的 imr = %q，OKX 给的是空串", v.Imr)
+	}
+
+	bvs, err := s.BalanceViews()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := bvs[0]
+	if b.Imr == "" || b.Mmr == "" {
+		t.Errorf("余额的 imr/mmr 没有全仓持仓时 OKX 给的是 \"0\"，实为 %q/%q", b.Imr, b.Mmr)
+	}
+	if b.MgnRatio != "" {
+		t.Errorf("没有全仓持仓时 mgnRatio OKX 给的是空串，实为 %q", b.MgnRatio)
+	}
+}
+
+// TestUplByLastPx 锁定按最新价与按标记价的两套浮盈。
+//
+// OKX 两套都给：强平判据用标记价那套，而回测通常以成交价撮合，与回测口径对得上的
+// 是最新价那套。两者在插针时能差出一亏一赚——实测同一仓位 upl 为 -34.50 而
+// uplLastPx 为 +0.50。
+func TestUplByLastPx(t *testing.T) {
+	s := newSim(t, types.NetMode)
+	mustFill(t, s, netFill(types.Buy, "4", "78000"))
+
+	// 标记价下跌、最新价上涨：两套应当一亏一赚
+	if err := s.SetMark("BTC-USDT-SWAP", dec("77000")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetLast("BTC-USDT-SWAP", dec("79000")); err != nil {
+		t.Fatal(err)
+	}
+	m, err := s.MetricsOf("BTC-USDT-SWAP", types.PosNet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, m.UPL, "-40", "按标记价的浮盈")
+	eq(t, m.UplLastPx, "40", "按最新价的浮盈")
+	if !m.UPLRatio.IsNegative() || !m.UplRatioLastPx.IsPositive() {
+		t.Errorf("两套收益率应当一负一正，实为 %s 与 %s", m.UPLRatio, m.UplRatioLastPx)
+	}
+
+	// 没推送过最新价时留空，不拿标记价顶替
+	s2 := newSim(t, types.NetMode)
+	mustFill(t, s2, netFill(types.Buy, "4", "78000"))
+	m2, err := s2.MetricsOf("BTC-USDT-SWAP", types.PosNet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m2.UplLastPx.IsZero() {
+		t.Errorf("没有最新价时不应凭空算出 uplLastPx，实为 %s", m2.UplLastPx)
+	}
+}
+
+// TestSetIndexPx 指数价是独立的一条行情，不与最新价、标记价混用。
+func TestSetIndexPx(t *testing.T) {
+	s := newSim(t, types.NetMode)
+	if err := s.SetMark("BTC-USDT-SWAP", dec("77000")); err != nil {
+		t.Fatal(err)
+	}
+	if s.IndexPx("BTC-USDT-SWAP").IsPositive() {
+		t.Error("只设了标记价，指数价不该有值")
+	}
+	if err := s.SetIndexPx("BTC-USDT-SWAP", dec("77100")); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, s.IndexPx("BTC-USDT-SWAP"), "77100", "指数价")
+	eq(t, s.MarkPx("BTC-USDT-SWAP"), "77000", "标记价不应被指数价冲掉")
+	if err := s.SetIndexPx("BTC-USDT-SWAP", dec("0")); err == nil {
+		t.Error("非正数的指数价应当被拒绝")
+	}
+}

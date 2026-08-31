@@ -85,6 +85,8 @@ func run(mode, instID, lever, baseSz, addSz, cutSz, envPath string, settle time.
 	}
 
 	switch mode {
+	case "view":
+		return runView(ctx, client)
 	case "check":
 		return runCheck(ctx, client, "SWAP")
 	case "adjust":

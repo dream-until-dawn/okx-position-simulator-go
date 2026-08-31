@@ -40,39 +40,41 @@ func millisStr(v int64) string {
 
 // PositionView 是与 OKX GET /api/v5/account/positions 响应字段级同构的仓位视图。
 type PositionView struct {
-	InstType    string `json:"instType"`
-	InstID      string `json:"instId"`
-	PosID       string `json:"posId"`
-	PosSide     string `json:"posSide"`
-	MgnMode     string `json:"mgnMode"`
-	Pos         string `json:"pos"`
-	AvailPos    string `json:"availPos"`
-	PosCcy      string `json:"posCcy"`
-	Ccy         string `json:"ccy"`
-	AvgPx       string `json:"avgPx"`
-	BePx        string `json:"bePx"`
-	MarkPx      string `json:"markPx"`
-	LiqPx       string `json:"liqPx"`
-	IdxPx       string `json:"idxPx"`
-	Last        string `json:"last"`
-	Lever       string `json:"lever"`
-	Margin      string `json:"margin"`
-	MgnRatio    string `json:"mgnRatio"`
-	Imr         string `json:"imr"`
-	Mmr         string `json:"mmr"`
-	Upl         string `json:"upl"`
-	UplRatio    string `json:"uplRatio"`
-	RealizedPnl string `json:"realizedPnl"`
-	Pnl         string `json:"pnl"`
-	Fee         string `json:"fee"`
-	FundingFee  string `json:"fundingFee"`
-	LiqPenalty  string `json:"liqPenalty"`
-	NotionalUsd string `json:"notionalUsd"`
-	Adl         string `json:"adl"`
-	UsdPx       string `json:"usdPx"`
-	CTime       string `json:"cTime"`
-	UTime       string `json:"uTime"`
-	TradeID     string `json:"tradeId"`
+	InstType       string `json:"instType"`
+	InstID         string `json:"instId"`
+	PosID          string `json:"posId"`
+	PosSide        string `json:"posSide"`
+	MgnMode        string `json:"mgnMode"`
+	Pos            string `json:"pos"`
+	AvailPos       string `json:"availPos"`
+	PosCcy         string `json:"posCcy"`
+	Ccy            string `json:"ccy"`
+	AvgPx          string `json:"avgPx"`
+	BePx           string `json:"bePx"`
+	MarkPx         string `json:"markPx"`
+	LiqPx          string `json:"liqPx"`
+	IdxPx          string `json:"idxPx"`
+	Last           string `json:"last"`
+	Lever          string `json:"lever"`
+	Margin         string `json:"margin"`
+	MgnRatio       string `json:"mgnRatio"`
+	Imr            string `json:"imr"`
+	Mmr            string `json:"mmr"`
+	Upl            string `json:"upl"`
+	UplRatio       string `json:"uplRatio"`
+	UplLastPx      string `json:"uplLastPx"`
+	UplRatioLastPx string `json:"uplRatioLastPx"`
+	RealizedPnl    string `json:"realizedPnl"`
+	Pnl            string `json:"pnl"`
+	Fee            string `json:"fee"`
+	FundingFee     string `json:"fundingFee"`
+	LiqPenalty     string `json:"liqPenalty"`
+	NotionalUsd    string `json:"notionalUsd"`
+	Adl            string `json:"adl"`
+	UsdPx          string `json:"usdPx"`
+	CTime          string `json:"cTime"`
+	UTime          string `json:"uTime"`
+	TradeID        string `json:"tradeId"`
 }
 
 // newPositionView 由仓位与其风险指标装配 OKX 形态的视图。
@@ -106,7 +108,14 @@ func newPositionView(p Position, inst refdata.Instrument, m Metrics) PositionVie
 		v.PosCcy = inst.CtValCcy
 	}
 
-	v.LiqPenalty = numStr(p.LiqPenalty, true)
+	// 零与空串必须照 OKX 的实际约定来，两者含义不同。实测：仓位的 liqPenalty /
+	// pnl / fundingFee 恒为数值（没有就是 "0"），而 imr / liqPx 没有时是空串。
+	// 早先把「零」一律抹成空串，字段级对拍一跑就露馅了。
+	v.LiqPenalty = p.LiqPenalty.String()
+	// OKX 的 pnl 是【平仓订单累计收益额】，即毛盈亏；realizedPnl 才是净额。
+	// 实测 realizedPnl(-0.24456) = pnl(0) + fee(-0.24456)，两者恰好是本库的
+	// RealizedPnl 与 NetRealizedPnl()。
+	v.Pnl = p.RealizedPnl.String()
 	v.MarkPx = numStr(m.MarkPx, true)
 	v.BePx = numStr(m.BePx, true)
 	v.LiqPx = numStr(m.LiqPx, true)
@@ -114,6 +123,8 @@ func newPositionView(p Position, inst refdata.Instrument, m Metrics) PositionVie
 	v.Mmr = numStr(m.MMR, true)
 	v.Upl = numStr(m.UPL, false)
 	v.UplRatio = numStr(m.UPLRatio, false)
+	v.UplLastPx = numStr(m.UplLastPx, false)
+	v.UplRatioLastPx = numStr(m.UplRatioLastPx, false)
 	return v
 }
 
@@ -147,9 +158,10 @@ func newBalanceView(b Balance) BalanceView {
 		IsoEq:     b.IsoEq.String(),
 		IsoUpl:    b.IsoUpl.String(),
 		Upl:       b.Upl.String(),
-		// 这三项只在有全仓持仓时才有值——实测只有逐仓时 OKX 一律返回空串
-		Imr:      numStr(b.IMR, true),
-		Mmr:      numStr(b.MMR, true),
+		// imr / mmr 实测恒为数值，没有全仓持仓时是 "0" 而不是空串；
+		// mgnRatio 才是没有全仓持仓时返回空串。三者的约定并不一致，照实抄。
+		Imr:      b.IMR.String(),
+		Mmr:      b.MMR.String(),
 		MgnRatio: numStr(b.MgnRatio, true),
 	}
 }
@@ -168,7 +180,12 @@ func (s *Simulator) PositionViews() ([]PositionView, error) {
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, newPositionView(p, inst, m))
+		v := newPositionView(p, inst, m)
+		// 最新价与指数价是行情而非仓位状态，纯函数 newPositionView 拿不到，
+		// 在这里补。没推送过就留空——OKX 用空串表示「无此值」，不能拿标记价顶替。
+		v.Last = numStr(s.last[p.InstID], true)
+		v.IdxPx = numStr(s.index[p.InstID], true)
+		out = append(out, v)
 	}
 	return out, nil
 }
