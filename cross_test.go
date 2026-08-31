@@ -584,3 +584,98 @@ func TestCrossLiquidationClosesWholeCurrency(t *testing.T) {
 		t.Errorf("强平后不应还有持仓，实际 %d 个", len(s.Positions()))
 	}
 }
+
+// TestMaxSizeAgainstRealAccount 用 OKX 的 max-size 实测值锁定两种模式的取价规则。
+//
+// 两种模式在这里分道扬镳，且差距是数量级的：同一账户、同一杠杆，以 1712 挂卖单
+// （标记价 2446），逐仓能开 122.49 张，全仓只能开 30.74 张。差的正是「开仓瞬间的
+// 盯市浮亏」——全仓的浮亏直接扣可用余额，逐仓的落在仓位保证金上。
+//
+// 容差取 1%：标记价与 max-size 是两次调用，其间有 0.1~0.9 的漂移，而用错公式时
+// 差的是 300%，1% 足以区分。
+func TestMaxSizeAgainstRealAccount(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("testdata", "conformance", "max-size.json"))
+	if err != nil {
+		t.Fatalf("读取夹具失败: %v", err)
+	}
+	var fx struct {
+		Instrument json.RawMessage            `json:"instrument"`
+		Tiers      map[string]json.RawMessage `json:"tiers"`
+		Lever      string                     `json:"lever"`
+		FeeRate    struct{ Maker, Taker string }
+		Samples    []struct {
+			TdMode   string `json:"tdMode"`
+			Px       string `json:"px"`
+			MarkPx   string `json:"markPx"`
+			AvailBal string `json:"availBal"`
+			MaxBuy   string `json:"maxBuy"`
+			MaxSell  string `json:"maxSell"`
+		} `json:"samples"`
+	}
+	if err := json.Unmarshal(b, &fx); err != nil {
+		t.Fatalf("解析夹具失败: %v", err)
+	}
+	var inst refdata.Instrument
+	if err := json.Unmarshal(fx.Instrument, &inst); err != nil {
+		t.Fatalf("解析合约规格失败: %v", err)
+	}
+	sb := refdata.NewSnapshotBuilder(1).
+		AddInstruments(inst).
+		SetFeeSchedule(refdata.DefaultFeeSchedule().WithRate(types.InstSwap, refdata.FeeRate{
+			Maker: dec(fx.FeeRate.Maker), Taker: dec(fx.FeeRate.Taker),
+		}))
+	for key, raw := range fx.Tiers {
+		k, err := refdata.ParseTierKey(key)
+		if err != nil {
+			t.Fatalf("解析档位表键 %q 失败: %v", key, err)
+		}
+		var tiers []refdata.PositionTier
+		if err := json.Unmarshal(raw, &tiers); err != nil {
+			t.Fatalf("解析档位表 %q 失败: %v", key, err)
+		}
+		tbl, err := refdata.NewTierTable(k, tiers)
+		if err != nil {
+			t.Fatalf("构造档位表 %q 失败: %v", key, err)
+		}
+		sb.AddTierTable(tbl)
+	}
+	snap := sb.Build()
+
+	for _, sm := range fx.Samples {
+		t.Run(sm.TdMode+"/"+sm.Px, func(t *testing.T) {
+			s, err := New(Config{PosMode: types.LongShortMode, RefData: snap})
+			if err != nil {
+				t.Fatalf("新建模拟器失败: %v", err)
+			}
+			if err := s.Deposit("USDT", dec(sm.AvailBal)); err != nil {
+				t.Fatalf("入金失败: %v", err)
+			}
+			mgnMode := types.MgnIsolated
+			if sm.TdMode == "cross" {
+				mgnMode = types.MgnCross
+			}
+			for _, side := range []types.PosSide{types.PosLong, types.PosShort} {
+				if err := s.SetLeverage(inst.InstID, mgnMode, side, dec(fx.Lever)); err != nil {
+					t.Fatalf("设置杠杆失败: %v", err)
+				}
+			}
+			s.SetMark(inst.InstID, dec(sm.MarkPx))
+
+			m, err := s.MaxSize(inst.InstID, types.TdMode(sm.TdMode), dec(sm.Px))
+			if err != nil {
+				t.Fatalf("查询最大可开失败: %v", err)
+			}
+			rel := func(got, want decimal.Decimal, field string) {
+				t.Helper()
+				if want.IsZero() {
+					return
+				}
+				if diff := got.Sub(want).Abs(); diff.GreaterThan(want.Mul(dec("0.01"))) {
+					t.Errorf("%s = %s，OKX 为 %s，相差 %s（超出 1%%）", field, got, want, diff)
+				}
+			}
+			rel(m.MaxBuy, dec(sm.MaxBuy), "最大可买")
+			rel(m.MaxSell, dec(sm.MaxSell), "最大可卖")
+		})
+	}
+}
