@@ -76,6 +76,30 @@ sim.CancelOrder("ord-1")
 
 平仓方向的挂单不产生冻结，反手委托只对开仓那一段冻结——两条都经实测确认。
 
+### 资金费
+
+**模拟器不产生资金费率**——它由标的溢价与利率决定，属于市场结果，回测不该去
+预测它，正如不该预测价格。费率由调用方给出：
+
+```go
+step, _ := sim.Advance(okxsim.Bar{
+    InstID: "BTC-USDT-SWAP", Last: d("78000"), Ts: ts,
+    Funding: &okxsim.Funding{Rate: d("0.0001")},   // 到结算时刻才给
+})
+for _, f := range step.Fundings { /* 本步结算的资金费 */ }
+```
+
+历史费率可从 `refdata/live` 免鉴权拉取，因此**历史区间的资金费能算准**：
+
+```go
+rs, _ := fetcher.FundingRateHistory(ctx, "BTC-USDT-SWAP", 0, after, 100)
+// rs[i].FundingTime / rs[i].RealizedRate —— 用 RealizedRate，那是实际结算所用的
+```
+
+结算周期随合约而异（实测 49 个永续：16 个 4 小时、33 个 8 小时），由数据决定
+而非模拟器推算。**逐仓的资金费从仓位保证金扣，不动现金余额**——这一点由真实
+账单确证，记错地方会让逐仓权益与强平价一起算错。
+
 ### 内置撮合
 
 撮合是每个回测引擎都要做的事，各自重写一遍容易在成交角色、冻结释放这类细节上

@@ -25,10 +25,10 @@ Go 库特有约束：
 | `v0.1.0` ✅ | **地基**：types 枚举、okxerr 错误体系、refdata（Instrument / TierTable / **按 instFamily 聚合的查档** / 取整校验 / 费率表与用户覆盖 / Provider 抽象 / 快照持久化 / go:embed 内置快照）、refdata/live（**定期自动拉取与规则变更检测**）、cmd/refdata-sync | 已达成 | 4 |
 | `v0.2.0` ✅ | **USDT永续 · 逐仓**：Simulator 门面、出入金、Fill 处理（开/平/加/减仓、**反手**、均价、已实现盈亏）、手续费、uPL/IMR/MMR/mgnRatio/liqPx/bkPx、逐仓保证金增减、OKX 形态视图 | 已达成：对拍 66 字段全部一致 | 5 |
 | `v0.3.0` | **预下单计算与内置撮合**：OrderCost / MaxSize / PreviewFill、挂单冻结与 ordFrozen、PlaceOrder / CancelOrder / Advance、成交角色自动判定 | 与 OKX 的 max-size 及冻结额一致；撮合的成交角色与费率正确 | 5 |
-| `v0.4.0` | **全仓(cross)**：双向持仓模型、账户级权益/adjEq/可用保证金/ordFroz、instFamily 跨合约合并查档、全仓 mgnRatio（按 settleCcy 分币种） | 全仓账户级风险指标与模拟盘一致 | 5 |
-| `v0.4.0` | **时钟 + 资金费 + 强平引擎**：`Advance(ts)`、资金费结算（周期从 fundingTime 读）、`撤单 → 阶梯减仓(降档重算) → 全平 → 穿仓`、事件体系 | 强平序列可复现；构造大仓位验证「降档救仓」路径 | 6 |
-| `v0.5.0` | **币本位(inverse)永续**：inverse 全线公式（uPL/IMR/liqPx/资金费）、settleCcy=BTC 的账户模型 | inverse 与模拟盘对拍一致 | 3 |
-| `v0.6.0` | **订单层**：limit/market/post_only/fok/ioc、reduceOnly、closePosition、TP/SL、算法单、ordFroz 精确化 | 下单/撤单/部分成交路径完整 | 4 |
+| `v0.4.0` | **资金费 + 强平引擎（逐仓）**：资金费结算（周期从 fundingTime 读，逐仓从保证金扣）、`撤单 → 阶梯减仓(降档重算) → 全平 → 穿仓`、事件体系，并入 Advance | 强平序列可复现；构造大仓位验证「降档救仓」路径 | 6 |
+| `v0.5.0` | **全仓(cross)**：账户级权益/adjEq/可用保证金、**instFamily 跨合约合并查档**、全仓 mgnRatio（按 settleCcy 分币种）、账户级强平 | 全仓账户级风险指标与模拟盘一致 | 5 |
+| `v0.6.0` | **币本位(inverse)永续**：inverse 全线公式（uPL/IMR/liqPx/资金费）、settleCcy=BTC 的账户模型 | inverse 与模拟盘对拍一致 | 3 |
+| `v0.7.0` | **算法单**：止盈止损、计划委托、移动止盈止损，触发价类型（last/index/mark） | 触发路径与 OKX 一致 | 3 |
 | `v0.8.0` | **对拍加固与差异清零**：`cmd/conformance` 全面化、`refdata/live` 子包、修复对拍暴露的全部差异、性能基准 | 全字段 diff 无差异或差异有明确说明 | 5 |
 | `v0.9.0` | **API 打磨**：命名/签名定型、向后兼容审查、文档、示例、README | API 冻结评审通过 | 2 |
 | `v1.0.0` | **冻结**：tag 打在 main | — | 1 |
@@ -47,6 +47,19 @@ Go 库特有约束：
 - 费率表的 `WithRate` / `WithLevel` 覆盖机制
 - 快照持久化（确定性序列化，可纳入版本控制做 diff）
 - `cmd/refdata-sync` 快照生成工具
+
+## 排期顺序的调整
+
+原计划 v0.4.0 做全仓。改为先做**资金费与强平**，理由是对回测结果的扭曲程度：
+忽略资金费会系统性高估持仓收益（每 4 至 8 小时结算一次，长持仓位累积可观），
+不模拟强平则会让本该爆仓的策略产出幻想结果。全仓模式影响的是资金效率，
+量级小得多。
+
+依赖上也顺：逐仓强平是仓位级、自成一体；全仓强平是账户级，放在全仓那一版
+一并做更合适。
+
+原 v0.6.0 的「订单层」大部分已随 v0.3.0 的内置撮合完成，剩余的算法单
+（止盈止损、计划委托）独立成 v0.7.0。
 
 ## 一处由使用者提出的排期调整
 

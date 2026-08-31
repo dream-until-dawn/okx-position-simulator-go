@@ -51,6 +51,13 @@ type Bar struct {
 	Last   decimal.Decimal
 	MarkPx decimal.Decimal
 	Ts     int64
+
+	// Funding 非空时在本步结算一次资金费。
+	//
+	// 结算发生在撮合【之前】，作用于带入本步的仓位。理由是资金费的结算时刻
+	// 落在整点，也就是一根 K 线的起点；若放在撮合之后，本步内新开的仓位会被
+	// 收取一笔它并未持有过的资金费。
+	Funding *Funding
 }
 
 func (b Bar) markPx() decimal.Decimal {
@@ -71,8 +78,9 @@ type PlaceResult struct {
 // StepResult 是推进一步行情的结果。
 type StepResult struct {
 	Ts       int64
+	Fundings []FundingResult
 	Fills    []FillResult
-	Canceled []string // 本步被撤销的委托，如触发了只挂单限制
+	Canceled []string // 本步被撤销的委托，如资金不足以承接成交
 }
 
 // LastPx 返回某合约当前的最新成交价；未推进过行情则返回零值。
@@ -247,8 +255,8 @@ func (s *Simulator) fillOrder(o Order, px decimal.Decimal,
 // 同一步内多笔可成交时按下单先后处理，与真实的时间优先一致；同一时刻下的
 // 委托按委托 ID 排序，使结果可复现。
 //
-// 资金费结算与强平检查将在后续版本并入本方法——它们同样由时钟驱动，
-// 放在一处才能保证顺序确定。
+// 一步之内的执行顺序是确定的：资金费结算 -> 撮合。强平检查将在同一方法内
+// 接在撮合之后，因为它要看的是本步全部变动落定后的风险状况。
 func (s *Simulator) Advance(b Bar) (StepResult, error) {
 	if b.InstID == "" {
 		return StepResult{}, okxerr.New(okxerr.CodeParamEmpty, "instId 不能为空")
@@ -274,6 +282,17 @@ func (s *Simulator) Advance(b Bar) (StepResult, error) {
 	}
 
 	res := StepResult{Ts: b.Ts}
+
+	// 资金费先于撮合结算，作用于带入本步的仓位——结算时刻落在整点，
+	// 即一根 K 线的起点；放在撮合之后会让本步新开的仓位被收一笔它并未持有过的费。
+	if b.Funding != nil {
+		fr, err := s.settleFunding(b.InstID, *b.Funding, b.markPx(), b.Ts)
+		if err != nil {
+			return StepResult{}, err
+		}
+		res.Fundings = fr
+	}
+
 	for _, o := range s.triggeredOrders(b) {
 		fr, err := s.fillOrder(o, o.Px, types.Maker, b.Ts)
 		if err != nil {
