@@ -305,3 +305,149 @@ func TestPosLimitDoesNotBlockReducing(t *testing.T) {
 }
 
 var _ = decimal.Zero
+
+// levChangeFixture 是 testdata/conformance/leverage-change-margin.json 的结构。
+type levChangeFixture struct {
+	Spec   json.RawMessage `json:"spec"`
+	Trials []struct {
+		From           string         `json:"from"`
+		To             string         `json:"to"`
+		NeedAtNewLever string         `json:"needAtNewLever"`
+		Enough         bool           `json:"enough"`
+		CashBefore     string         `json:"cashBefore"`
+		CashAfter      string         `json:"cashAfter"`
+		BeforeTight    map[string]any `json:"beforeTight"`
+		After          map[string]any `json:"after"`
+	} `json:"trials"`
+}
+
+// TestLeverageChangeRetunesMargin 锁定「持仓状态下改杠杆」对保证金与现金的影响。
+//
+// 实测规则：改杠杆后，若权益（保证金 + 未实现盈亏）已不低于按新杠杆算的初始保证金，
+// 则分文不动；不足则从现金补足到恰好相等。
+//
+// **方向容易想反**：降低杠杆要【补】保证金，提高杠杆什么都【不退】。三次提高杠杆
+// （10->20、3->6、6->15）实测保证金与现金分文未动。
+func TestLeverageChangeRetunesMargin(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("testdata", "conformance",
+		"leverage-change-margin.json"))
+	if err != nil {
+		t.Fatalf("读取夹具失败: %v", err)
+	}
+	var fx levChangeFixture
+	if err := json.Unmarshal(b, &fx); err != nil {
+		t.Fatalf("解析夹具失败: %v", err)
+	}
+	var inst refdata.Instrument
+	if err := json.Unmarshal(fx.Spec, &inst); err != nil {
+		t.Fatal(err)
+	}
+	if len(fx.Trials) < 4 {
+		t.Fatalf("夹具里只有 %d 次改杠杆，锁不住", len(fx.Trials))
+	}
+
+	// 夹具里的每一次改杠杆都在本库里重演一遍
+	for _, tr := range fx.Trials {
+		name := tr.From + "x->" + tr.To + "x"
+		t.Run(name, func(t *testing.T) {
+			s := newSim(t, types.LongShortMode)
+			p := tr.BeforeTight
+			pos := Position{
+				InstID: inst.InstID, MgnMode: types.MgnIsolated, PosSide: types.PosLong,
+				Pos: dec(str2s(p["pos"])), AvgPx: dec(str2s(p["avgPx"])),
+				Lever: dec(tr.From), Margin: dec(str2s(p["margin"])),
+			}
+			if err := s.SetPosition(pos); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.SetMarkPx(inst.InstID, dec(str2s(p["markPx"]))); err != nil {
+				t.Fatal(err)
+			}
+			cashBefore := s.CashBal("USDT")
+
+			if err := s.SetLeverage(inst.InstID, types.MgnIsolated, types.PosLong,
+				dec(tr.To)); err != nil {
+				t.Fatalf("改杠杆失败: %v", err)
+			}
+			after, _ := s.PositionOf(inst.InstID, types.PosLong)
+
+			if tr.Enough {
+				eq(t, after.Margin, pos.Margin.String(), "权益已够时保证金不应变动")
+				eq(t, s.CashBal("USDT"), cashBefore.String(), "权益已够时现金不应变动")
+				return
+			}
+			// 不够时补足：权益应恰好等于按新杠杆算的初始保证金
+			m, err := s.MetricsOf(inst.InstID, types.PosLong)
+			if err != nil {
+				t.Fatal(err)
+			}
+			near(t, after.Margin.Add(m.UPL), dec(tr.NeedAtNewLever), "0.0000001",
+				"补足后的权益应等于按新杠杆算的初始保证金")
+			// 现金减少的量等于补进去的量
+			eq(t, cashBefore.Sub(s.CashBal("USDT")),
+				after.Margin.Sub(pos.Margin).String(), "现金减少的量 = 保证金增加的量")
+		})
+	}
+}
+
+// TestLeverageChangeNeedsCash 降低杠杆时现金不足要报错，而不是把保证金调成半吊子。
+func TestLeverageChangeNeedsCash(t *testing.T) {
+	s := newSim(t, types.NetMode)
+	mustFill(t, s, netFill(types.Buy, "4", "78000"))
+	if err := s.SetMarkPx("BTC-USDT-SWAP", dec("78000")); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := s.PositionOf("BTC-USDT-SWAP", types.PosNet)
+	marginBefore := p.Margin
+
+	// 把现金提到只剩一点点
+	if err := s.Withdraw("USDT", s.CashBal("USDT").Sub(dec("10"))); err != nil {
+		t.Fatal(err)
+	}
+	// 5x -> 1x 需要补足约 4 倍的保证金，现金远远不够
+	err := s.SetLeverage("BTC-USDT-SWAP", types.MgnIsolated, types.PosNet, dec("1"))
+	if !okxerr.HasCode(err, okxerr.CodeInsufficientBal) {
+		t.Fatalf("现金不足时的错误 = %v，期望 51008", err)
+	}
+	if sf, ok := ShortfallOf(err); !ok || !sf.Missing.IsPositive() {
+		t.Errorf("应当给出缺口金额，实为 %v", err)
+	}
+	p, _ = s.PositionOf("BTC-USDT-SWAP", types.PosNet)
+	eq(t, p.Margin, marginBefore.String(), "失败后保证金不应变动")
+	eq(t, s.Leverage("BTC-USDT-SWAP", types.MgnIsolated, types.PosNet), "5",
+		"失败后杠杆不应变动")
+}
+
+// TestLeverageChangeCrossMovesNoCash 全仓改杠杆不动现金，只改被占用的 imr。
+func TestLeverageChangeCrossMovesNoCash(t *testing.T) {
+	s := newSim(t, types.LongShortMode)
+	if err := s.SetLeverage("BTC-USDT-SWAP", types.MgnCross, types.PosLong,
+		dec("10")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Fill(Fill{
+		InstID: "BTC-USDT-SWAP", TdMode: types.TdCross, Side: types.Buy,
+		PosSide: types.PosLong, Sz: dec("4"), Px: dec("78000"),
+		ExecType: types.Taker, Ts: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cash := s.CashBal("USDT")
+	b0, _ := s.BalanceOf("USDT")
+
+	for _, lev := range []string{"3", "20"} {
+		if err := s.SetLeverage("BTC-USDT-SWAP", types.MgnCross, types.PosLong,
+			dec(lev)); err != nil {
+			t.Fatalf("全仓改到 %sx 应当成功: %v", lev, err)
+		}
+		eq(t, s.CashBal("USDT"), cash.String(), "全仓改杠杆不应动现金")
+		p, _ := s.PositionOf("BTC-USDT-SWAP", types.PosLong)
+		eq(t, p.Margin, "0", "全仓仓位的保证金恒为零")
+	}
+	b1, _ := s.BalanceOf("USDT")
+	if b1.IMR.Equal(b0.IMR) {
+		t.Error("全仓改杠杆应当改变被占用的 imr")
+	}
+}
+
+func str2s(v any) string { s, _ := v.(string); return s }
