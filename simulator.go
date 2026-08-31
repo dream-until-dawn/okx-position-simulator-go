@@ -100,6 +100,20 @@ func New(cfg Config) (*Simulator, error) {
 	}, nil
 }
 
+// Instrument 返回某合约的规格。
+//
+// 回测引擎离不开它：按可用资金定量之后要用 lotSz 取整，挂单价要用 tickSz 取整，
+// 算名义价值要用 ctVal。这些每根 K 线都在做。
+//
+// 之所以要由模拟器转发而不是让调用方自己留一份 RefData，是为了**只有一个事实
+// 来源**：两份 RefData 一旦不是同一个（比如其中一份被自动刷新换掉了），取整用的
+// 规则就和模拟器实际用的不是一套，而这种偏差不会报错，只会让结果悄悄不对。
+//
+// 拿到 Instrument 后可直接用它的 RoundSize / RoundPrice / ValidateSize。
+func (s *Simulator) Instrument(instID string) (refdata.Instrument, error) {
+	return s.cfg.RefData.Instrument(instID)
+}
+
 // PosMode 返回持仓方式。
 func (s *Simulator) PosMode() types.PosMode { return s.cfg.PosMode }
 
@@ -393,6 +407,49 @@ func (s *Simulator) MetricsOf(instID string, posSide types.PosSide) (Metrics, er
 	return m, nil
 }
 
+// MetricsAt 计算某个仓位在【给定标记价】下的风险指标，不改变任何状态。
+//
+// 与 MetricsOf 的唯一区别是价格由调用方给出。压力测试与风控预演要问的是
+// 「价格到 X 时保证金率多少、爆不爆」，此前只能改掉标记价、算完再改回来——
+// 那是有状态的做法，中途出错就会把行情表污染掉，而且改标记价本身可能触发别的东西。
+//
+// 全仓的权益与保证金率仍取所属结算币种的整体值，而那一部分用的是各仓位【当前】
+// 的标记价：只把一个合约的价格换掉，其余合约的风险不会跟着变。跨合约的整体压力
+// 测试须由调用方自行组合。
+func (s *Simulator) MetricsAt(instID string, posSide types.PosSide,
+	markPx decimal.Decimal) (Metrics, error) {
+
+	if !markPx.IsPositive() {
+		return Metrics{}, okxerr.New(okxerr.CodeParamError,
+			"markPx: 标记价须为正数，实为 %s", markPx)
+	}
+	pos, ok := s.PositionOf(instID, posSide)
+	if !ok {
+		return Metrics{}, nil
+	}
+	inst, err := s.cfg.RefData.Instrument(instID)
+	if err != nil {
+		return Metrics{}, err
+	}
+	tier, err := s.tierOf(pos, inst)
+	if err != nil {
+		return Metrics{}, err
+	}
+	rate, err := s.fees.Rate(inst)
+	if err != nil {
+		return Metrics{}, err
+	}
+	m := computeMetrics(pos, inst, tier, markPx, rate.Taker)
+	if pos.MgnMode == types.MgnCross {
+		cm, err := s.CrossMetricsOf(inst.SettleCcy)
+		if err != nil {
+			return Metrics{}, err
+		}
+		m.Equity, m.MgnRatio, m.LiqPx = cm.Equity, cm.MgnRatio, cm.LiqPx
+	}
+	return m, nil
+}
+
 // BalanceOf 返回某币种的余额快照。
 func (s *Simulator) BalanceOf(ccy string) (Balance, error) {
 	b := Balance{Ccy: ccy, CashBal: s.cash[ccy]}
@@ -524,11 +581,27 @@ func (s *Simulator) AdjustMargin(instID string, posSide types.PosSide,
 		return nil
 	}
 
+	// 可减额 = 保证金 − 开仓初始保证金 + min(0, 未实现盈亏)。
+	//
+	// 这条规则是**不对称的**，两侧都由实测确定：
+	//
+	//	浮亏  实打实地吃掉可减额。浮亏的仓位上减掉全部空间会被 OKX 以 59301 拒绝
+	//	浮盈  完全不放大可减额。实测一个保证金恰在下限、浮盈 +0.97 的仓位，
+	//	      最大可减额是 0 而不是 0.97
+	//
+	// 早先只在一个有浮盈的仓位上验过「减到恰好等于下限是允许的」，于是漏掉了
+	// 浮亏那一侧——v0.9.0 最后一轮对拍才把它照出来。
+	//
+	// 边界上还有一点未定：二分测出的上限比本式略高一点点（1e-2 量级），但测量
+	// 期间浮亏本身漂了同一量级，分辨不出是公式还有一项、还是取数时点所致。
+	// 本式偏保守，宁可少减一点也不放行 OKX 会拒绝的操作。见 docs/okx-rules.md。
 	floor := initialMargin(inst, pos.AbsPos(), pos.AvgPx, pos.Lever)
-	if pos.Margin.Sub(amt).LessThan(floor) {
+	upl := unrealizedPnl(inst, pos.SignedPos(), pos.AvgPx, s.markOf(instID, pos.AvgPx))
+	loss := decimal.Min(decimal.Zero, upl)
+	if room := pos.Margin.Sub(floor).Add(loss); amt.GreaterThan(room) {
 		return okxerr.New(okxerr.CodeMarginAdjustExceeds,
-			"%s 减少保证金 %s 后将低于开仓初始保证金 %s（当前 %s）",
-			instID, amt, floor, pos.Margin)
+			"%s 最多只能减少 %s（当前保证金 %s，开仓初始保证金 %s，未实现亏损 %s），实为 %s",
+			instID, room, pos.Margin, floor, loss, amt)
 	}
 	s.cash[inst.SettleCcy] = s.cash[inst.SettleCcy].Add(amt)
 	pos.Margin = pos.Margin.Sub(amt)

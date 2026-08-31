@@ -6,7 +6,6 @@ import (
 
 	"github.com/dream-until-dawn/okx-position-simulator-go/okxerr"
 	"github.com/dream-until-dawn/okx-position-simulator-go/types"
-	"github.com/shopspring/decimal"
 )
 
 // ---- 逐仓保证金增减 ----
@@ -226,37 +225,6 @@ func TestBalanceViewShape(t *testing.T) {
 		if _, ok := got[f]; !ok {
 			t.Errorf("余额视图缺少 OKX 字段 %q", f)
 		}
-	}
-}
-
-func TestInverseViewHasPosCcy(t *testing.T) {
-	s, err := New(Config{
-		PosMode: types.NetMode, RefData: mustEmbedded(t),
-		DefaultLever: decimal.NewFromInt(5),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Deposit("BTC", dec("1")); err != nil {
-		t.Fatal(err)
-	}
-	f := Fill{
-		InstID: "BTC-USD-SWAP", TdMode: types.TdIsolated, Side: types.Buy,
-		PosSide: types.PosNet, Sz: dec("1"), Px: dec("78000"),
-		ExecType: types.Taker, Ts: 1,
-	}
-	if _, err := s.Fill(f); err != nil {
-		t.Fatalf("反向合约成交失败: %v", err)
-	}
-	views, err := s.PositionViews()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if views[0].PosCcy != "USD" {
-		t.Errorf("反向合约的 posCcy = %q，期望标的币 USD", views[0].PosCcy)
-	}
-	if views[0].Ccy != "BTC" {
-		t.Errorf("反向合约的保证金币种 = %q，期望 BTC", views[0].Ccy)
 	}
 }
 

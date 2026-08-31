@@ -387,3 +387,128 @@ func TestSetPositionValidates(t *testing.T) {
 		t.Error("置入空仓应当删除该仓位")
 	}
 }
+
+// TestAdjustMarginFloorCountsUnrealizedLoss 锁定「浮亏吃掉可减额」。
+//
+// 下限是「减完之后【仓位权益】不得低于开仓初始保证金」，而不是保证金本身。
+// 早先只在一个有浮盈的仓位上验过，于是漏掉了这一项——v0.9.0 最后一轮对拍时，
+// 一个浮亏的仓位上减掉全部 room 被 OKX 以 59301 拒绝，才把它照出来。
+func TestAdjustMarginFloorCountsUnrealizedLoss(t *testing.T) {
+	newPos := func(t *testing.T, markPx string) *Simulator {
+		t.Helper()
+		s := newSim(t, types.NetMode)
+		mustFill(t, s, netFill(types.Buy, "4", "78000"))
+		if err := s.SetMarkPx("BTC-USDT-SWAP", dec(markPx)); err != nil {
+			t.Fatal(err)
+		}
+		// 追加 100，制造可减空间
+		if err := s.AdjustMargin("BTC-USDT-SWAP", types.PosNet,
+			types.MarginAdd, dec("100")); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+
+	// 无浮盈浮亏：可减额就是刚追加的那 100
+	s := newPos(t, "78000")
+	if err := s.AdjustMargin("BTC-USDT-SWAP", types.PosNet,
+		types.MarginReduce, dec("100")); err != nil {
+		t.Errorf("没有浮亏时应当能把追加的 100 全减回去: %v", err)
+	}
+
+	// 浮亏 40（价格从 78000 跌到 77000，0.01×4 张）：可减额只剩 60
+	s = newPos(t, "77000")
+	m, err := s.MetricsOf("BTC-USDT-SWAP", types.PosNet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, m.UPL, "-40", "浮亏")
+
+	if err := s.AdjustMargin("BTC-USDT-SWAP", types.PosNet,
+		types.MarginReduce, dec("100")); err == nil {
+		t.Error("有 40 浮亏时不该还能减掉全部 100")
+	} else if !okxerr.HasCode(err, okxerr.CodeMarginAdjustExceeds) {
+		t.Errorf("错误码 = %v，期望 59301", err)
+	}
+	if err := s.AdjustMargin("BTC-USDT-SWAP", types.PosNet,
+		types.MarginReduce, dec("60")); err != nil {
+		t.Errorf("减 60（= 100 − 40 浮亏）应当可以: %v", err)
+	}
+
+	// 浮盈不会放大可减额——下限只由开仓初始保证金决定
+	s = newPos(t, "79000")
+	if err := s.AdjustMargin("BTC-USDT-SWAP", types.PosNet,
+		types.MarginReduce, dec("140")); err == nil {
+		t.Error("浮盈不应让可减额超过追加的部分加上原有空间")
+	}
+}
+
+// TestInstrumentAccessor 模拟器要能给出合约规格。
+//
+// 回测引擎每根 K 线都要用 lotSz 取整张数、用 tickSz 取整价格。让调用方自己另留
+// 一份 RefData 不只是麻烦——两份一旦不是同一个（比如其中一份被自动刷新换掉），
+// 取整用的规则就和模拟器实际用的不是一套，而这种偏差不报错，只会让结果悄悄不对。
+func TestInstrumentAccessor(t *testing.T) {
+	s := newSim(t, types.NetMode)
+
+	inst, err := s.Instrument("BTC-USDT-SWAP")
+	if err != nil {
+		t.Fatalf("取合约规格失败: %v", err)
+	}
+	eq(t, inst.LotSz, "0.01", "lotSz")
+	if inst.InstID != "BTC-USDT-SWAP" {
+		t.Errorf("instId = %q", inst.InstID)
+	}
+	// 拿到之后取整方法直接可用
+	eq(t, inst.RoundSize(dec("3.14159")), "3.14", "按 lotSz 取整")
+
+	if _, err := s.Instrument("NOPE-USDT-SWAP"); !okxerr.HasCode(err, okxerr.CodeInstNotExist) {
+		t.Errorf("未知合约的错误 = %v，期望 51001", err)
+	}
+}
+
+// TestMetricsAt 假设价格下的风险指标，且不污染行情表。
+//
+// 压力测试要问「价格到 X 时爆不爆」。此前只能改掉标记价、算完再改回来——那是有
+// 状态的做法，中途出错会把行情表留在错误的值上，改标记价本身也可能触发别的东西。
+func TestMetricsAt(t *testing.T) {
+	s := newSim(t, types.NetMode)
+	mustFill(t, s, netFill(types.Buy, "4", "78000"))
+	if err := s.SetMarkPx("BTC-USDT-SWAP", dec("78000")); err != nil {
+		t.Fatal(err)
+	}
+
+	base, err := s.MetricsOf("BTC-USDT-SWAP", types.PosNet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, base.UPL, "0", "当前浮盈")
+
+	// 假设跌到 77000
+	at, err := s.MetricsAt("BTC-USDT-SWAP", types.PosNet, dec("77000"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, at.UPL, "-40", "假设价下的浮盈")
+	if !at.MgnRatio.LessThan(base.MgnRatio) {
+		t.Errorf("跌价后的保证金率 %s 应低于当前的 %s", at.MgnRatio, base.MgnRatio)
+	}
+
+	// 行情表不该被污染
+	eq(t, s.MarkPx("BTC-USDT-SWAP"), "78000", "标记价不应被 MetricsAt 改动")
+	again, _ := s.MetricsOf("BTC-USDT-SWAP", types.PosNet)
+	eq(t, again.UPL, "0", "再查一次仍是当前价下的结果")
+
+	// 跌到强平价之下应当判定为可强平
+	deep, err := s.MetricsAt("BTC-USDT-SWAP", types.PosNet, base.LiqPx.Sub(dec("100")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !deep.IsLiquidatable() {
+		t.Errorf("跌破强平价 %s 后应判定为可强平，实际保证金率 %s", base.LiqPx, deep.MgnRatio)
+	}
+
+	if _, err := s.MetricsAt("BTC-USDT-SWAP", types.PosNet, dec("0")); err == nil {
+		t.Error("非正数的标记价应当被拒绝")
+	}
+}

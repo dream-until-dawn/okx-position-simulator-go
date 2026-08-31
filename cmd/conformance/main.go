@@ -137,6 +137,20 @@ func run(mode, instID, lever, baseSz, addSz, cutSz, envPath string, settle time.
 		return err
 	}
 
+	// 账上另有仓位时，账户级字段无从比对——见 otherPositions
+	if ps, err := client.Account.Positions(ctx, "SWAP", nil, nil); err == nil {
+		for _, p := range ps {
+			if p.InstID != instID && !num(p.Pos).IsZero() {
+				otherPositions = true
+				break
+			}
+		}
+	}
+	if otherPositions {
+		fmt.Println("账上另有仓位：账户级字段（cashBal / availBal / isoEq / eq / frozenBal）" +
+			"本轮跳过——它们反映整个账户，而模拟器里只有本次开出来的那一个")
+	}
+
 	sim, err := okxsim.New(okxsim.Config{
 		AcctLv:       types.AcctLv(cfg.AcctLv),
 		PosMode:      posMode,
@@ -330,8 +344,29 @@ func runStep(ctx context.Context, client *okx.Client, sim *okxsim.Simulator,
 		if okxPos == nil && isPositionField(r.Fields[i].Name) {
 			r.Fields[i].Empty = true
 		}
+		if otherPositions && isAccountField(r.Fields[i].Name) {
+			r.Fields[i].Empty = true
+		}
 	}
 	return r, nil
+}
+
+// otherPositions 记录账上是否有本次对拍之外的仓位。
+//
+// 账户级字段（cashBal / availBal / isoEq / eq / frozenBal）反映的是整个账户，
+// 而模拟器里只有本次对拍开出来的那一个。账上另有仓位时这些字段必然对不上，
+// 差值恰好等于那些仓位的权益——那不是模拟器算错，是前提不成立。
+// 与其给出误导的差异，不如明确跳过并说明。
+var otherPositions bool
+
+// isAccountField 报告某字段是否反映整个账户而非单个仓位。
+func isAccountField(name string) bool {
+	switch name {
+	case "cashBal", "availBal", "isoEq", "eq", "frozenBal",
+		"isoEq(同一时点)", "eq(同一时点)", "frozenBal(同一时点)":
+		return true
+	}
+	return false
 }
 
 func isPositionField(name string) bool {
@@ -351,7 +386,12 @@ func mustBal(sim *okxsim.Simulator, ccy string) okxsim.Balance {
 }
 
 // buildDemoRefData 从模拟盘拉取规则数据并装配成快照。
-func buildDemoRefData(ctx context.Context, instID string) (*refdata.Snapshot, error) {
+// buildDemoRefData 装配一份只含所需档位表的模拟盘快照。
+//
+// 可以传多个 instID：一个结算币种下往往有多个品种的仓位，而档位表按 instFamily
+// 拉取，少拉一张，重建那个币种的余额时就会因为查不到档位表而失败——全仓的
+// 保证金率要逐仓位查档，一个都不能缺。
+func buildDemoRefData(ctx context.Context, instIDs ...string) (*refdata.Snapshot, error) {
 	f := live.NewFetcher(live.WithSimulated(true))
 
 	insts, err := f.Instruments(ctx, types.InstSwap)
@@ -362,23 +402,35 @@ func buildDemoRefData(ctx context.Context, instID string) (*refdata.Snapshot, er
 		AddInstruments(insts...).
 		SetFeeSchedule(refdata.DefaultFeeSchedule())
 
-	var family string
-	for _, i := range insts {
-		if i.InstID == instID {
-			family = i.InstFamily
-			break
+	families := map[string]bool{}
+	for _, instID := range instIDs {
+		if instID == "" {
+			continue
 		}
-	}
-	if family == "" {
-		return nil, fmt.Errorf("模拟盘上没有合约 %s", instID)
-	}
-	for _, mode := range []types.MgnMode{types.MgnCross, types.MgnIsolated} {
-		tbl, err := f.PositionTiers(ctx, refdata.TierKey{
-			InstType: types.InstSwap, MgnMode: mode, Family: family})
-		if err != nil {
-			return nil, fmt.Errorf("拉取 %s 档位表失败: %w", family, err)
+		var family string
+		for _, i := range insts {
+			if i.InstID == instID {
+				family = i.InstFamily
+				break
+			}
 		}
-		b.AddTierTable(tbl)
+		if family == "" {
+			return nil, fmt.Errorf("模拟盘上没有合约 %s", instID)
+		}
+		families[family] = true
+	}
+	if len(families) == 0 {
+		return nil, fmt.Errorf("没有给出任何合约，无从决定要拉哪些档位表")
+	}
+	for family := range families {
+		for _, mode := range []types.MgnMode{types.MgnCross, types.MgnIsolated} {
+			tbl, err := f.PositionTiers(ctx, refdata.TierKey{
+				InstType: types.InstSwap, MgnMode: mode, Family: family})
+			if err != nil {
+				return nil, fmt.Errorf("拉取 %s 档位表失败: %w", family, err)
+			}
+			b.AddTierTable(tbl)
+		}
 	}
 	return b.Build(), nil
 }

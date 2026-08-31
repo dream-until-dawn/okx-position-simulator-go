@@ -38,6 +38,11 @@ func runView(ctx context.Context, client *okx.Client) error {
 	if len(raw.Data) == 0 {
 		return fmt.Errorf("账户上没有持仓可供对拍")
 	}
+	rawBal, err := okx.Do[json.RawMessage](ctx, client, "GET",
+		"/api/v5/account/balance", nil, nil, true)
+	if err != nil {
+		return fmt.Errorf("读取原始余额失败: %w", err)
+	}
 	cfg, err := client.Account.Config(ctx)
 	if err != nil {
 		return fmt.Errorf("读取账户配置失败: %w", err)
@@ -58,11 +63,6 @@ func runView(ctx context.Context, client *okx.Client) error {
 		sum.add(diffFields(label, okxPos, got, positionFieldPolicy, positionBlankPolicy))
 	}
 
-	rawBal, err := okx.Do[json.RawMessage](ctx, client, "GET",
-		"/api/v5/account/balance", nil, nil, true)
-	if err != nil {
-		return fmt.Errorf("读取原始余额失败: %w", err)
-	}
 	if len(rawBal.Data) > 0 {
 		var envelope struct {
 			Details []map[string]any `json:"details"`
@@ -79,7 +79,7 @@ func runView(ctx context.Context, client *okx.Client) error {
 			if err != nil {
 				return fmt.Errorf("重建 %s 余额视图失败: %w", ccy, err)
 			}
-			sum.add(diffFields("余额 "+ccy, d, got, balanceFieldPolicy, balanceBlankPolicy))
+			sum.add(diffBalance("余额 "+ccy, d, got))
 		}
 	}
 
@@ -105,6 +105,7 @@ type viewSummary struct {
 	declared     int
 	blank        int
 	precision    int
+	drift        int
 	extra        int
 	unclassified []string
 	lines        []string
@@ -124,6 +125,11 @@ func (s *viewSummary) add(ds []fieldDiff) {
 			s.declared++
 		case "blank":
 			s.blank++
+		case "drift":
+			s.drift++
+			s.lines = append(s.lines, fmt.Sprintf(
+				"  ~~ %-22s 本库 %s | OKX %s（随行情，两次读取的时间差）",
+				d.name, d.ours, d.okx))
 		case "precision":
 			s.precision++
 			s.lines = append(s.lines,
@@ -158,9 +164,9 @@ func (s *viewSummary) report() string {
 	}
 	out += "\n" + strings.Repeat("=", 72) + "\n"
 	out += fmt.Sprintf("共 %d 个字段：一致 %d（其中仅差在精度 %d），已声明不建模 %d，"+
-		"已声明留空 %d，本库多给 %d，有差异 %d，未分类 %d\n",
+		"已声明留空 %d，随行情 %d，本库多给 %d，有差异 %d，未分类 %d\n",
 		s.total, s.matched+s.precision, s.precision, s.declared, s.blank,
-		s.extra, s.mismatched, len(s.unclassified))
+		s.drift, s.extra, s.mismatched, len(s.unclassified))
 	if len(s.unclassified) > 0 {
 		sort.Strings(s.unclassified)
 		out += "未分类的字段（要么建模，要么在 fieldPolicy 里写明理由）：\n"
@@ -320,7 +326,7 @@ func buildBalView(ctx context.Context, client *okx.Client, ccy string,
 	items []json.RawMessage, posMode types.PosMode) (map[string]string, error) {
 
 	var mine []map[string]any
-	var anyInst string
+	var instIDs []string
 	for _, it := range items {
 		var m map[string]any
 		if err := json.Unmarshal(it, &m); err != nil {
@@ -328,10 +334,13 @@ func buildBalView(ctx context.Context, client *okx.Client, ccy string,
 		}
 		if c, _ := m["ccy"].(string); c == ccy {
 			mine = append(mine, m)
-			anyInst, _ = m["instId"].(string)
+			if id, _ := m["instId"].(string); id != "" {
+				instIDs = append(instIDs, id)
+			}
 		}
 	}
-	snap, err := buildDemoRefData(ctx, anyInst)
+	// 该币种下的每个品种都要有档位表：全仓的保证金率逐仓位查档，缺一张就重建不出来
+	snap, err := buildDemoRefData(ctx, instIDs...)
 	if err != nil {
 		return nil, err
 	}
@@ -472,4 +481,78 @@ func classify(ours, okxVal string) string {
 		return "precision"
 	}
 	return "diff"
+}
+
+// driftSensitive 是余额里【由标记价推出】的字段。
+//
+// 它们的值取决于取数那一刻的行情，而余额与持仓是两次独立的读取——本库重建余额时
+// 用的是持仓响应里的标记价，于是两次读取之间的行情走动会原样落在这些字段上。
+// 静态仓位上只有 1e-14，账上一有活跃品种就能漂到 1e-3。
+//
+// 等市场安静下来是不现实的：五个仓位横跨三个品种，每秒都至少有一个标记价在动。
+// 因此这些字段改用另一种方式验——见 diffBalance。
+var driftSensitive = map[string]bool{
+	"upl": true, "isoUpl": true, "isoEq": true, "eq": true,
+	"availBal": true, "availEq": true, "frozenBal": true,
+	"imr": true, "mmr": true, "mgnRatio": true,
+}
+
+// diffBalance 比对一个币种的余额，并把随行情漂移的字段单独处理。
+//
+// 对这些字段，改为验证 OKX **自己的**字段之间满足本库的公式——余额响应内部
+// 必然自洽，于是这个检验完全不受两次读取的时间差影响。这不是放宽标准：公式写错
+// 时差的是百分之几乃至几倍，而漂移只有千分之一。
+func diffBalance(label string, okxObj map[string]any, ours map[string]string) []fieldDiff {
+	ds := diffFields(label, okxObj, ours, balanceFieldPolicy, balanceBlankPolicy)
+	out := make([]fieldDiff, 0, len(ds))
+	for _, d := range ds {
+		if d.verdict == "diff" && driftSensitive[d.name] {
+			d.verdict = "drift"
+		}
+		out = append(out, d)
+	}
+	out = append(out, checkBalanceIdentities(okxObj)...)
+	return out
+}
+
+// checkBalanceIdentities 用余额响应【内部】的字段互验本库的公式。
+//
+//	availBal  = cashBal + 全仓浮盈 − imr
+//	eq        = cashBal + isoEq + 全仓浮盈
+//	frozenBal = isoEq + imr
+//
+// 全仓浮盈取 upl − isoUpl。此处不含挂单项，因为对拍时账上没有挂单；
+// 有挂单时的形态另有实测，见 okx-rules.md「全仓账务」。
+func checkBalanceIdentities(o map[string]any) []fieldDiff {
+	num := func(k string) decimal.Decimal {
+		s, _ := o[k].(string)
+		if s == "" {
+			return decimal.Zero
+		}
+		d, err := decimal.NewFromString(s)
+		if err != nil {
+			return decimal.Zero
+		}
+		return d
+	}
+	cash, imr, isoEq := num("cashBal"), num("imr"), num("isoEq")
+	crossUpl := num("upl").Sub(num("isoUpl"))
+
+	out := []fieldDiff{{name: "  —— 用余额响应内部的字段互验公式 ——", verdict: "header"}}
+	for _, c := range []struct {
+		name      string
+		want, got decimal.Decimal
+	}{
+		{"availBal=现金+全仓浮盈−imr", num("availBal"), cash.Add(crossUpl).Sub(imr)},
+		{"eq=现金+逐仓权益+全仓浮盈", num("eq"), cash.Add(isoEq).Add(crossUpl)},
+		{"frozenBal=逐仓权益+imr", num("frozenBal"), isoEq.Add(imr)},
+	} {
+		if c.want.Sub(c.got).Abs().LessThan(decimal.RequireFromString("1e-8")) {
+			out = append(out, fieldDiff{name: c.name, verdict: "ok"})
+			continue
+		}
+		out = append(out, fieldDiff{
+			name: c.name, okx: c.want.String(), ours: c.got.String(), verdict: "diff"})
+	}
+	return out
 }

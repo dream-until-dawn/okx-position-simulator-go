@@ -272,3 +272,34 @@ func TestCrossFundingChargesCash(t *testing.T) {
 	eq(t, p.Margin, "0", "全仓仓位的保证金始终为零")
 	eq(t, p.Funding, "-0.24", "累计资金费仍记在仓位上")
 }
+
+// TestInversePosCcyIsEmpty 锁定 posCcy 在衍生品上恒为空。
+//
+// 早先按「反向合约的 posCcy 是标的币」建模，那是从字段名推来的假设而非实测。
+// v0.9.0 的全字段对拍把它照出来了：BTC-USD-SWAP 的仓位本库给 USD，OKX 给空串。
+// 这个字段只在币币杠杆的仓位上才有值。
+func TestInversePosCcyIsEmpty(t *testing.T) {
+	_, snap := loadInverseFixture(t)
+	s, err := New(Config{PosMode: types.LongShortMode, RefData: snap})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Deposit("BTC", dec("1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetPosition(Position{
+		InstID: "BTC-USD-SWAP", MgnMode: types.MgnIsolated, PosSide: types.PosLong,
+		Pos: dec("40"), AvgPx: dec("78000"), Lever: dec("20"), Margin: dec("0.0025"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s.SetMarkPx("BTC-USD-SWAP", dec("78000"))
+
+	views, err := s.PositionViews()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if views[0].PosCcy != "" {
+		t.Errorf("反向合约的 posCcy = %q，OKX 给的是空串", views[0].PosCcy)
+	}
+}

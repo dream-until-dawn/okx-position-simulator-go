@@ -73,10 +73,13 @@ func runMargin(ctx context.Context, client *okx.Client, sim *okxsim.Simulator,
 	if err != nil {
 		return err
 	}
-	// 追加与减少各取开仓保证金的一成。**必须向下取整**：新开的仓位其保证金恰好
-	// 等于下限（实测 margin - Q×开仓均价/杠杆 = 0.000000），所以可减额精确等于
-	// 刚追加的那一笔；向上取整会让减的比加的多出一个末位，直接撞上 59301。
+	// 追加与减少各取开仓保证金的一成，减的时候再让出一成给浮亏。
+	//
+	// 新开的仓位其保证金恰好等于下限（实测 margin − Q×开仓均价/杠杆 = 0.000000），
+	// 所以可减额精确等于刚追加的那一笔——但**浮亏会吃掉一块**，行情一动就减不满。
+	// 对拍要验的是保证金增减的账务，不是去踩那条边界，故留出余量。
 	step := num(base.Margin).Mul(decimal.RequireFromString("0.1")).RoundDown(6)
+	reduceStep := step.Mul(decimal.RequireFromString("0.9")).RoundDown(6)
 	if !step.IsPositive() {
 		return fmt.Errorf("仓位保证金 %s 太小，算不出可用的调整额", base.Margin)
 	}
@@ -86,15 +89,16 @@ func runMargin(ctx context.Context, client *okx.Client, sim *okxsim.Simulator,
 		name string
 		typ  string
 		mode types.MarginOp
+		amt  decimal.Decimal
 	}{
-		{"追加保证金", "add", types.MarginAdd},
-		{"减少保证金", "reduce", types.MarginReduce},
+		{"追加保证金", "add", types.MarginAdd, step},
+		{"减少保证金", "reduce", types.MarginReduce, reduceStep},
 	} {
 		fmt.Printf("\n>>> %s %s %s\n", op.name, step, inst.SettleCcy)
-		if err := adjustMarginLive(ctx, client, inst.InstID, posSide, op.typ, step); err != nil {
+		if err := adjustMarginLive(ctx, client, inst.InstID, posSide, op.typ, op.amt); err != nil {
 			return fmt.Errorf("%s失败: %w", op.name, err)
 		}
-		if err := sim.AdjustMargin(inst.InstID, posSide, op.mode, step); err != nil {
+		if err := sim.AdjustMargin(inst.InstID, posSide, op.mode, op.amt); err != nil {
 			return fmt.Errorf("模拟器%s失败: %w", op.name, err)
 		}
 		time.Sleep(settle)

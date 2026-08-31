@@ -102,10 +102,11 @@ func newPositionView(p Position, inst refdata.Instrument, m Metrics) PositionVie
 	} else {
 		v.Margin = p.Margin.String()
 	}
-	// 反向合约的 posCcy 是标的币；正向合约恒为空。
-	if inst.IsInverse() {
-		v.PosCcy = inst.CtValCcy
-	}
+	// posCcy 在衍生品上恒为空——正向与反向都是。它只在币币杠杆的仓位上才有值。
+	//
+	// 早先按「反向合约的 posCcy 是标的币」建模，那是从字段名推来的假设而非实测；
+	// v0.9.0 的全字段对拍上，BTC-USD-SWAP 的两个仓位都把它照出来了：本库给 USD，
+	// OKX 给空串。
 
 	// 零与空串必须照 OKX 的实际约定来，两者含义不同。实测：仓位的 liqPenalty /
 	// pnl / fundingFee 恒为数值（没有就是 "0"），而 imr / liqPx 没有时是空串。
