@@ -235,8 +235,15 @@ go run ./cmd/refdata-sync -top 100 -out my-snapshot.json.gz
 逐字段比对仓位与账户。当前 66 个字段全部一致，差值在 `1e-15 ~ 1e-11`（decimal 精度残差）。
 
 ```
-cd cmd/conformance && go run . -inst BTC-USDT-SWAP -lever 5
+cd cmd/conformance
+go run . -inst BTC-USDT-SWAP -lever 5   # 真实下单后逐字段对拍
+go run . -mode check                     # 只核对账户现有仓位的指标，不交易
 ```
+
+两种模式互补：下单流程验的是「一连串操作后状态对不对」，`check` 验的是
+「给定任意状态，各项指标算得对不对」。后者能覆盖前者难以构造的情形——
+实测在 100 倍杠杆、多空同时持有、距强平 0.6% 的状态下核对，
+12 个字段全部一致（差值 `1e-17` 至 `1e-14`，`margin` 两侧逐位相同）。
 
 它是独立的嵌套模块：需要 OKX SDK 才能发起已签名请求，而主模块要保持
 「依赖树只有 decimal 一个」。代价是根目录的 `go build ./...` 不含它，需单独进入执行。
