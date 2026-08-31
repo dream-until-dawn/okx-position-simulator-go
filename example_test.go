@@ -101,3 +101,54 @@ func ExampleSimulator_Fill_reversal() {
 	// 已实现盈亏 2000（只计平掉的部分）
 	// 现持仓 -60 张，新均价 75000
 }
+
+// 预下单计算：回测引擎在下单前先问「挂得起吗、能挂多少、成交后会怎样」。
+func ExampleSimulator_OrderCost() {
+	sim, err := okxsim.New(okxsim.Config{
+		PosMode: types.NetMode, RefData: refdata.MustEmbedded(), DefaultLever: d("5"),
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := sim.Deposit("USDT", d("10000")); err != nil {
+		log.Fatal(err)
+	}
+	if err := sim.SetMark("BTC-USDT-SWAP", d("78000")); err != nil {
+		log.Fatal(err)
+	}
+
+	// 这个价位最多能开多少张
+	m, err := sim.MaxSize("BTC-USDT-SWAP", types.TdIsolated, d("78000"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("最多可买 %s 张，可卖 %s 张\n", m.MaxBuy, m.MaxSell)
+
+	// 挂 10 张要冻结多少
+	cost, err := sim.OrderCost(okxsim.OrderReq{
+		InstID: "BTC-USDT-SWAP", TdMode: types.TdIsolated,
+		Side: types.Buy, PosSide: types.PosNet, Sz: d("10"), Px: d("78000"),
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("挂 10 张需冻结 %s（保证金 %s + 手续费 %s）\n",
+		cost.Frozen, cost.Margin, cost.Fee)
+
+	// 成交后仓位会变成什么样——预演不改变任何状态
+	pv, err := sim.PreviewFill(okxsim.Fill{
+		InstID: "BTC-USDT-SWAP", TdMode: types.TdIsolated,
+		Side: types.Buy, PosSide: types.PosNet, Sz: d("10"), Px: d("78000"),
+		ExecType: types.Taker, Ts: 1,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("若成交：持仓 %s 张，均价 %s，占用保证金 %s\n",
+		pv.After.Pos, pv.After.AvgPx, pv.After.Margin)
+
+	// Output:
+	// 最多可买 63.94 张，可卖 63.94 张
+	// 挂 10 张需冻结 1563.9（保证金 1560 + 手续费 3.9）
+	// 若成交：持仓 10 张，均价 78000，占用保证金 1560
+}

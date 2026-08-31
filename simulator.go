@@ -48,12 +48,13 @@ type leverageKey struct {
 // 非并发安全。回测是单线程热路径，加锁是纯粹的浪费；确有并发需要时请在外层
 // 自行串行化。
 type Simulator struct {
-	cfg   Config
-	fees  refdata.FeeSchedule
-	cash  map[string]decimal.Decimal
-	pos   map[positionKey]Position
-	marks map[string]decimal.Decimal
-	lever map[leverageKey]decimal.Decimal
+	cfg     Config
+	fees    refdata.FeeSchedule
+	cash    map[string]decimal.Decimal
+	pos     map[positionKey]Position
+	marks   map[string]decimal.Decimal
+	lever   map[leverageKey]decimal.Decimal
+	pending map[string]PendingOrder
 }
 
 // New 新建模拟器。RefData 为必填。
@@ -83,12 +84,13 @@ func New(cfg Config) (*Simulator, error) {
 	}
 
 	return &Simulator{
-		cfg:   cfg,
-		fees:  fees,
-		cash:  make(map[string]decimal.Decimal),
-		pos:   make(map[positionKey]Position),
-		marks: make(map[string]decimal.Decimal),
-		lever: make(map[leverageKey]decimal.Decimal),
+		cfg:     cfg,
+		fees:    fees,
+		cash:    make(map[string]decimal.Decimal),
+		pos:     make(map[positionKey]Position),
+		marks:   make(map[string]decimal.Decimal),
+		lever:   make(map[leverageKey]decimal.Decimal),
+		pending: make(map[string]PendingOrder),
 	}, nil
 }
 
@@ -366,9 +368,19 @@ func (s *Simulator) Balance(ccy string) (Balance, error) {
 		b.IsoEq = b.IsoEq.Add(p.Margin).Add(upl)
 	}
 
-	b.FrozenBal = b.IsoEq
+	// 挂单冻结经实测标定：OKX 的 ordFrozen 只是保证金部分，手续费不在其中，
+	// 但可用余额是按两者之和扣减的；frozenBal 则同时含逐仓权益与挂单冻结。
+	//
+	//	无挂单有持仓  availBal = cashBal，frozenBal = isoEq
+	//	有开仓挂单    availBal = cashBal − (保证金 + 手续费)
+	//	              frozenBal = isoEq + 保证金 + 手续费
+	//
+	// 平仓方向的挂单不产生冻结，这一点也已实测确认。
+	ordMargin, ordFee := s.orderFreeze(ccy)
+	b.OrdFrozen = ordMargin
+	b.FrozenBal = b.IsoEq.Add(ordMargin).Add(ordFee)
 	b.Eq = b.CashBal.Add(b.IsoEq)
-	b.AvailBal = b.CashBal.Sub(b.OrdFrozen)
+	b.AvailBal = b.CashBal.Sub(ordMargin).Sub(ordFee)
 	b.AvailEq = b.AvailBal
 	return b, nil
 }
@@ -385,6 +397,9 @@ func (s *Simulator) Balances() ([]Balance, error) {
 			return nil, err
 		}
 		seen[inst.SettleCcy] = true
+	}
+	for _, o := range s.pending {
+		seen[o.Cost.Ccy] = true
 	}
 
 	ccys := make([]string, 0, len(seen))

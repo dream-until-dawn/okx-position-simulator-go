@@ -47,6 +47,35 @@ b, _ := sim.Balance("USDT")
 // b.CashBal = 9374.44   b.IsoEq = 584   b.Eq = 9958.44
 ```
 
+### 预下单计算
+
+回测引擎在下单前需要知道「挂得起吗、能挂多少、成交后会怎样」——这些无法从
+成交后的状态倒推：
+
+```go
+// 这个价位最多能开多少张
+m, _ := sim.MaxSize("BTC-USDT-SWAP", types.TdIsolated, d("78000"))
+// m.MaxBuy = 63.94   m.MaxSell = 63.94
+
+// 挂 10 张要冻结多少
+cost, _ := sim.OrderCost(okxsim.OrderReq{
+    InstID: "BTC-USDT-SWAP", TdMode: types.TdIsolated,
+    Side: types.Buy, PosSide: types.PosNet, Sz: d("10"), Px: d("78000"),
+})
+// cost.Frozen = 1563.9  （保证金 1560 + 手续费 3.9）
+// cost.Affordable(availBal) 判断挂不挂得起
+
+// 成交后仓位会变成什么样——预演不改变任何状态
+pv, _ := sim.PreviewFill(fill)
+// pv.After.Pos / AvgPx / Margin，反手时还有 pv.Reversed / ClosedSz / OpenedSz
+
+// 引擎真挂单后告知模拟器，可用余额随之冻结；撤单或成交后释放
+sim.PlaceOrder("ord-1", req)
+sim.CancelOrder("ord-1")
+```
+
+平仓方向的挂单不产生冻结，反手委托只对开仓那一段冻结——两条都经实测确认。
+
 `SetMark` 只更新价格、不触发任何风控——资金费结算与强平检查由 `Advance` 按时钟
 推进（v0.4.0），这样多个合约在同一时刻的更新顺序就不会影响结果。
 

@@ -24,7 +24,8 @@ Go 库特有约束：
 |---|---|---|---|
 | `v0.1.0` ✅ | **地基**：types 枚举、okxerr 错误体系、refdata（Instrument / TierTable / **按 instFamily 聚合的查档** / 取整校验 / 费率表与用户覆盖 / Provider 抽象 / 快照持久化 / go:embed 内置快照）、refdata/live（**定期自动拉取与规则变更检测**）、cmd/refdata-sync | 已达成 | 4 |
 | `v0.2.0` ✅ | **USDT永续 · 逐仓**：Simulator 门面、出入金、Fill 处理（开/平/加/减仓、**反手**、均价、已实现盈亏）、手续费、uPL/IMR/MMR/mgnRatio/liqPx/bkPx、逐仓保证金增减、OKX 形态视图 | 已达成：对拍 66 字段全部一致 | 5 |
-| `v0.3.0` | **双向(long_short) + 全仓(cross)**：双向持仓模型、账户级权益/adjEq/可用保证金/ordFroz、instFamily 跨合约合并查档、全仓 mgnRatio（按 settleCcy 分币种） | 全仓账户级风险指标与模拟盘一致 | 5 |
+| `v0.3.0` | **预下单计算与挂单冻结**：OrderCost（挂单需冻结多少）、MaxSize（可开张数）、PreviewFill（成交预演）、挂单登记与 ordFrozen | 与 OKX 的 max-size 及冻结额一致 | 3 |
+| `v0.4.0` | **全仓(cross)**：双向持仓模型、账户级权益/adjEq/可用保证金/ordFroz、instFamily 跨合约合并查档、全仓 mgnRatio（按 settleCcy 分币种） | 全仓账户级风险指标与模拟盘一致 | 5 |
 | `v0.4.0` | **时钟 + 资金费 + 强平引擎**：`Advance(ts)`、资金费结算（周期从 fundingTime 读）、`撤单 → 阶梯减仓(降档重算) → 全平 → 穿仓`、事件体系 | 强平序列可复现；构造大仓位验证「降档救仓」路径 | 6 |
 | `v0.5.0` | **币本位(inverse)永续**：inverse 全线公式（uPL/IMR/liqPx/资金费）、settleCcy=BTC 的账户模型 | inverse 与模拟盘对拍一致 | 3 |
 | `v0.6.0` | **订单层**：limit/market/post_only/fok/ioc、reduceOnly、closePosition、TP/SL、算法单、ordFroz 精确化 | 下单/撤单/部分成交路径完整 | 4 |
@@ -47,6 +48,17 @@ Go 库特有约束：
 - 费率表的 `WithRate` / `WithLevel` 覆盖机制
 - 快照持久化（确定性序列化，可纳入版本控制做 diff）
 - `cmd/refdata-sync` 快照生成工具
+
+## 一处由使用者提出的排期调整
+
+原计划 v0.3.0 做全仓模式。使用者指出：本库的核心用途是供回测引擎调用，而回测
+引擎每根 K 线都要问「这单挂得起吗、能挂多少、成交后仓位会怎样」，而追加保证金
+这类操作在策略回测里可能整个跑完都用不上一次。
+
+据此把**预下单计算与挂单冻结**提到 v0.3.0，全仓顺延。这个判断是对的——
+Balance.OrdFrozen 此前虽有字段却恒为零，属于我漏掉的真实缺口。
+
+双向持仓已在 v0.2.0 一并完成，故其后各版本相应顺延一位。
 
 ## 已完成：v0.2.0
 
