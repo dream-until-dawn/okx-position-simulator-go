@@ -51,7 +51,13 @@ type Bar struct {
 	Low    decimal.Decimal
 	Last   decimal.Decimal
 	MarkPx decimal.Decimal
-	Ts     int64
+
+	// IdxPx 是指数价，只有 triggerPxType 为 index 的算法委托才用得上。
+	// 留空时这类委托无从判断，会被跳过并在 StepResult 里说明原因——
+	// 不拿标记价顶替，那是另一个价格。
+	IdxPx decimal.Decimal
+
+	Ts int64
 
 	// Funding 非空时在本步结算一次资金费。
 	//
@@ -102,6 +108,10 @@ type StepResult struct {
 	Fundings     []FundingResult
 	Fills        []FillResult
 	Liquidations []Liquidation
+
+	// AlgoTriggers 是本步被触发的算法委托。触发后生成的普通委托若当场成交，
+	// 对应的成交同时出现在 Fills 里。
+	AlgoTriggers []AlgoTrigger
 
 	// Canceled 是本步被撤销的委托及其原因。
 	//
@@ -314,12 +324,19 @@ func (s *Simulator) Advance(b Bar) (StepResult, error) {
 			"low(%s) 不应高于 high(%s)", b.Low, b.High)
 	}
 
+	res := StepResult{Ts: b.Ts}
+
+	// 算法单的触发判定要赶在行情落库之前，见 detectAlgoTriggers。
+	// 判定与执行分开：执行排在资金费之后，见下。
+	algoHits := s.detectAlgoTriggers(b)
+
 	s.last[b.InstID] = b.Last
 	if err := s.SetMark(b.InstID, b.markPx()); err != nil {
 		return StepResult{}, err
 	}
-
-	res := StepResult{Ts: b.Ts}
+	if b.IdxPx.IsPositive() {
+		s.index[b.InstID] = b.IdxPx
+	}
 
 	// 资金费先于撮合结算，作用于带入本步的仓位——结算时刻落在整点，
 	// 即一根 K 线的起点；放在撮合之后会让本步新开的仓位被收一笔它并未持有过的费。
@@ -330,6 +347,13 @@ func (s *Simulator) Advance(b Bar) (StepResult, error) {
 		}
 		res.Fundings = fr
 	}
+
+	// 算法单的执行排在资金费之后、撮合之前：排在资金费之后，本步被平掉的仓位才
+	// 不会漏收一笔它确实持有过的资金费；排在撮合之前，触发生成的委托才能参与本步
+	// 的撮合，否则一笔市价止损会白白拖到下一根 K 线才成交。
+	algoTriggers, algoFills := s.executeAlgoTriggers(algoHits, b.Ts)
+	res.AlgoTriggers = algoTriggers
+	res.Fills = append(res.Fills, algoFills...)
 
 	for _, o := range s.triggeredOrders(b) {
 		fr, err := s.fillOrder(o, o.Px, types.Maker, b.Ts)

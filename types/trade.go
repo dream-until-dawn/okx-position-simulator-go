@@ -188,3 +188,72 @@ func (t OrdType) IsPostOnly() bool { return t == OrdPostOnly }
 func (t OrdType) IsImmediate() bool {
 	return t == OrdMarket || t == OrdIOC || t == OrdFOK || t == OrdOptimalLimitIOC
 }
+
+// AlgoOrdType 算法委托类型，取值与 OKX 的 ordType 字段一致。
+//
+// 算法委托与普通委托是两条独立的链路：它不进订单簿，**不冻结任何资金**
+// （实测挂四张、availBal/ordFrozen/imr/mmr 全不动），只在价格触及条件时
+// 生成一笔普通委托，随后走正常撮合。
+type AlgoOrdType string
+
+const (
+	// AlgoTrigger 计划委托：价格触及 triggerPx 时按 ordPx 下单，ordPx 为 -1 即市价。
+	AlgoTrigger AlgoOrdType = "trigger"
+	// AlgoConditional 单向止盈止损：只带止盈或只带止损一条腿。
+	//
+	// 实测同时提交 tp 与 sl 两组参数时，OKX 只保留 sl，另一组被丢弃且不报错。
+	// 要两条腿并存须用 AlgoOCO。
+	AlgoConditional AlgoOrdType = "conditional"
+	// AlgoOCO 双向止盈止损：两条腿并存，任一触发则另一条作废。
+	AlgoOCO AlgoOrdType = "oco"
+	// AlgoMoveStop 移动止盈止损：触发价跟着极值棘轮，只进不退。
+	AlgoMoveStop AlgoOrdType = "move_order_stop"
+)
+
+func (t AlgoOrdType) String() string { return string(t) }
+
+func (t AlgoOrdType) Valid() bool {
+	switch t {
+	case AlgoTrigger, AlgoConditional, AlgoOCO, AlgoMoveStop:
+		return true
+	}
+	return false
+}
+
+// HasTPSL 报告该类型是否用止盈止损两组参数表达触发条件。
+func (t AlgoOrdType) HasTPSL() bool {
+	return t == AlgoConditional || t == AlgoOCO
+}
+
+// TriggerPxType 触发价类型，决定拿哪个价格与触发价比较。
+//
+// 三种 OKX 都接受（实测）。默认是 last。
+type TriggerPxType string
+
+const (
+	TriggerLast  TriggerPxType = "last"  // 最新成交价
+	TriggerIndex TriggerPxType = "index" // 指数价
+	TriggerMark  TriggerPxType = "mark"  // 标记价
+)
+
+func (t TriggerPxType) String() string { return string(t) }
+
+func (t TriggerPxType) Valid() bool {
+	switch t {
+	case TriggerLast, TriggerIndex, TriggerMark:
+		return true
+	}
+	return false
+}
+
+// AlgoState 算法委托的状态，取值与 OKX 的 state 字段一致。
+type AlgoState string
+
+const (
+	AlgoLive        AlgoState = "live"         // 待触发
+	AlgoEffective   AlgoState = "effective"    // 已触发，已生成普通委托
+	AlgoCanceled    AlgoState = "canceled"     // 已撤销
+	AlgoOrderFailed AlgoState = "order_failed" // 触发了但下单失败
+)
+
+func (s AlgoState) String() string { return string(s) }

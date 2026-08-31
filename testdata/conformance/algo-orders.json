@@ -1,0 +1,1375 @@
+{
+  "_provenance": {
+    "用途": "OKX 模拟盘上算法委托的真实响应，用于标定并锁定其行为",
+    "账户模式": "acctLv=2 现货合约模式，posMode=long_short_mode",
+    "环境": "模拟盘（x-simulated-trading:1）",
+    "采集方式": "挂计划委托观察资金占用；压着现价挂一张让它当场触发；双向各挂一张移动止损，按 4 秒间隔采样 40 次追踪触发价"
+  },
+  "_calibrated": {
+    "不冻结资金": "挂四张计划委托后 availBal / ordFrozen / imr / mmr 全部纹丝不动。算法单不进订单簿，只是一条『价格到了就下单』的规则",
+    "触发后": "state 由 live 变为 effective，ordId 字段带出一笔【普通委托】，该委托 ordType=market、state=filled，与手工市价单毫无二致",
+    "触发价类型": "last / index / mark 三种都接受，默认 last",
+    "conditional": "只认一条腿。同时提交 tp 与 sl 两组参数时 OKX 只保留 sl，另一组被丢弃且不报错。要两条腿并存须用 oco",
+    "oco": "两条腿并存，tp 与 sl 的字段都保留",
+    "move_order_stop": "moveTriggerPx = 极值 × (1 ∓ callbackRatio)。挂单瞬间的触发价就是『当时价格 × (1 ∓ ratio)』，极值自挂单起算而不需要先出现一段有利行情；此后只朝一个方向棘轮，40 次采样零回退",
+    "成交价与触发价": "实测一次真实触发：triggerPx=2451.68，市价单成交在 2451.67，即低一个 tickSz。本库不建模这一档滑点，成交价取触发价——有深度数据才谈得上滑点，没有就不该凭空造一个数"
+  },
+  "spec": {
+    "alias": "",
+    "auctionEndTime": "",
+    "baseCcy": "",
+    "category": "1",
+    "contTdSwTime": "1605101056000",
+    "ctMult": "1",
+    "ctType": "linear",
+    "ctVal": "0.1",
+    "ctValCcy": "ETH",
+    "expTime": "",
+    "floatPxLmtPct": "0.01",
+    "freq": "",
+    "futureSettlement": false,
+    "groupId": "4",
+    "initPxLmtPct": "0.02",
+    "instCategory": "1",
+    "instFamily": "ETH-USDT",
+    "instId": "ETH-USDT-SWAP",
+    "instIdCode": 2021032601102994,
+    "instType": "SWAP",
+    "lever": "100",
+    "listTime": "1605101055676",
+    "longPosRemainingQuota": "",
+    "lotSz": "0.01",
+    "maxIcebergSz": "100000000.0000000000000000",
+    "maxLmtAmt": "20000000",
+    "maxLmtSz": "100000000",
+    "maxMktAmt": "",
+    "maxMktSz": "200000",
+    "maxPlatOICoinLmt": "",
+    "maxPlatOILmt": "",
+    "maxPxLmtPct": "0.02",
+    "maxStopSz": "200000",
+    "maxTriggerSz": "100000000.0000000000000000",
+    "maxTwapSz": "100000000.0000000000000000",
+    "method": "",
+    "minSz": "0.01",
+    "openType": "call_auction",
+    "optType": "",
+    "posLmtAmt": "350000",
+    "posLmtPct": "35",
+    "preMktSwTime": "",
+    "quoteCcy": "",
+    "rpiMinLevel": "4",
+    "rpiMinPxBand": "20",
+    "ruleType": "normal",
+    "seriesId": "",
+    "settleCcy": "USDT",
+    "shortPosRemainingQuota": "",
+    "state": "live",
+    "stk": "",
+    "tickSz": "0.01",
+    "tradeQuoteCcyList": [],
+    "uly": "ETH-USDT",
+    "upcChg": []
+  },
+  "freezeCheck": {
+    "steps": [
+      {
+        "label": "计划委托挂单",
+        "request": {
+          "triggerPx": "1717.90",
+          "sz": "10"
+        },
+        "resp": {
+          "algoClOrdId": "",
+          "algoId": "3881325469714792448",
+          "clOrdId": "",
+          "sCode": "0",
+          "sMsg": "",
+          "tag": ""
+        },
+        "balBefore": {
+          "accAvgPx": "",
+          "autoLendAmt": "0",
+          "autoLendMtAmt": "0",
+          "autoLendStatus": "unsupported",
+          "autoStakingStatus": "unsupported",
+          "availBal": "3011.6728994320533",
+          "availEq": "3011.6728994320533",
+          "borrowFroz": "",
+          "cashBal": "3011.6728994320533",
+          "ccy": "USDT",
+          "clSpotInUseAmt": "",
+          "colBorrAutoConversion": "0",
+          "colRes": "0",
+          "collateralEnabled": false,
+          "collateralRestrict": false,
+          "crossLiab": "",
+          "disEq": "1607.7345987680771",
+          "eq": "4620.0025801820075",
+          "eqUsd": "4618.29317922734",
+          "fixedBal": "0",
+          "frozenBal": "1608.3296807499546",
+          "frpType": "0",
+          "imr": "0",
+          "interest": "",
+          "isoEq": "1608.3296807499546",
+          "isoLiab": "",
+          "isoUpl": "-80.14195000004554",
+          "liab": "",
+          "maxLoan": "",
+          "maxSpotInUse": "",
+          "mgnRatio": "",
+          "mmr": "0",
+          "notionalLever": "0",
+          "openAvgPx": "",
+          "ordFrozen": "0",
+          "rewardBal": "0",
+          "smtSyncEq": "0",
+          "spotBal": "",
+          "spotCopyTradingEq": "0",
+          "spotInUseAmt": "",
+          "spotIsoBal": "0",
+          "spotUpl": "",
+          "spotUplRatio": "",
+          "stgyEq": "0",
+          "totalPnl": "",
+          "totalPnlRatio": "",
+          "twap": "0",
+          "uTime": "1788172256877",
+          "upl": "-80.14195000004554",
+          "uplLiab": ""
+        },
+        "balAfter": {
+          "accAvgPx": "",
+          "autoLendAmt": "0",
+          "autoLendMtAmt": "0",
+          "autoLendStatus": "unsupported",
+          "autoStakingStatus": "unsupported",
+          "availBal": "3011.6728994320533",
+          "availEq": "3011.6728994320533",
+          "borrowFroz": "",
+          "cashBal": "3011.6728994320533",
+          "ccy": "USDT",
+          "clSpotInUseAmt": "",
+          "colBorrAutoConversion": "0",
+          "colRes": "0",
+          "collateralEnabled": false,
+          "collateralRestrict": false,
+          "crossLiab": "",
+          "disEq": "1607.7185154712695",
+          "eq": "4620.0025801820075",
+          "eqUsd": "4618.246979201538",
+          "fixedBal": "0",
+          "frozenBal": "1608.3296807499546",
+          "frpType": "0",
+          "imr": "0",
+          "interest": "",
+          "isoEq": "1608.3296807499546",
+          "isoLiab": "",
+          "isoUpl": "-80.14195000004554",
+          "liab": "",
+          "maxLoan": "",
+          "maxSpotInUse": "",
+          "mgnRatio": "",
+          "mmr": "0",
+          "notionalLever": "0",
+          "openAvgPx": "",
+          "ordFrozen": "0",
+          "rewardBal": "0",
+          "smtSyncEq": "0",
+          "spotBal": "",
+          "spotCopyTradingEq": "0",
+          "spotInUseAmt": "",
+          "spotIsoBal": "0",
+          "spotUpl": "",
+          "spotUplRatio": "",
+          "stgyEq": "0",
+          "totalPnl": "",
+          "totalPnlRatio": "",
+          "twap": "0",
+          "uTime": "1788172256877",
+          "upl": "-80.14195000004554",
+          "uplLiab": ""
+        }
+      },
+      {
+        "label": "触发价类型 last",
+        "resp": {
+          "algoClOrdId": "",
+          "algoId": "3881325681510338560",
+          "clOrdId": "",
+          "sCode": "0",
+          "sMsg": "",
+          "tag": ""
+        }
+      },
+      {
+        "label": "触发价类型 index",
+        "resp": {
+          "algoClOrdId": "",
+          "algoId": "3881325767946584064",
+          "clOrdId": "",
+          "sCode": "0",
+          "sMsg": "",
+          "tag": ""
+        }
+      },
+      {
+        "label": "触发价类型 mark",
+        "resp": {
+          "algoClOrdId": "",
+          "algoId": "3881325832538836992",
+          "clOrdId": "",
+          "sCode": "0",
+          "sMsg": "",
+          "tag": ""
+        }
+      },
+      {
+        "label": "多张算法单在挂",
+        "balAfter": {
+          "accAvgPx": "",
+          "autoLendAmt": "0",
+          "autoLendMtAmt": "0",
+          "autoLendStatus": "unsupported",
+          "autoStakingStatus": "unsupported",
+          "availBal": "3011.6728994320533",
+          "availEq": "3011.6728994320533",
+          "borrowFroz": "",
+          "cashBal": "3011.6728994320533",
+          "ccy": "USDT",
+          "clSpotInUseAmt": "",
+          "colBorrAutoConversion": "0",
+          "colRes": "0",
+          "collateralEnabled": false,
+          "collateralRestrict": false,
+          "crossLiab": "",
+          "disEq": "1607.7185154712695",
+          "eq": "4620.0025801820075",
+          "eqUsd": "4618.246979201538",
+          "fixedBal": "0",
+          "frozenBal": "1608.3296807499546",
+          "frpType": "0",
+          "imr": "0",
+          "interest": "",
+          "isoEq": "1608.3296807499546",
+          "isoLiab": "",
+          "isoUpl": "-80.14195000004554",
+          "liab": "",
+          "maxLoan": "",
+          "maxSpotInUse": "",
+          "mgnRatio": "",
+          "mmr": "0",
+          "notionalLever": "0",
+          "openAvgPx": "",
+          "ordFrozen": "0",
+          "rewardBal": "0",
+          "smtSyncEq": "0",
+          "spotBal": "",
+          "spotCopyTradingEq": "0",
+          "spotInUseAmt": "",
+          "spotIsoBal": "0",
+          "spotUpl": "",
+          "spotUplRatio": "",
+          "stgyEq": "0",
+          "totalPnl": "",
+          "totalPnlRatio": "",
+          "twap": "0",
+          "uTime": "1788172256877",
+          "upl": "-80.14195000004554",
+          "uplLiab": ""
+        }
+      }
+    ],
+    "algoDetail": {
+      "activePx": "",
+      "actualPx": "",
+      "actualSide": "",
+      "actualSz": "0",
+      "advChaseParams": [],
+      "advanceOrdType": "",
+      "aggressiveness": "",
+      "algoClOrdId": "",
+      "algoId": "3881325469714792448",
+      "amendPxOnTriggerType": "",
+      "attachAlgoOrds": [],
+      "cTime": "1788174912979",
+      "callbackRatio": "",
+      "callbackSpread": "",
+      "ccy": "USDT",
+      "chaseType": "",
+      "chaseVal": "",
+      "clOrdId": "",
+      "closeFraction": "",
+      "failCode": "0",
+      "instId": "ETH-USDT-SWAP",
+      "instType": "SWAP",
+      "isTradeBorrowMode": "false",
+      "last": "2454.26",
+      "lever": "10",
+      "linkedOrd": {
+        "ordId": ""
+      },
+      "lmtOrderNumber": "",
+      "maxChaseType": "",
+      "maxChaseVal": "",
+      "moveTriggerPx": "",
+      "ordId": "",
+      "ordIdList": [],
+      "ordPx": "1716.18",
+      "ordType": "trigger",
+      "posSide": "long",
+      "pxLimit": "",
+      "pxSpread": "",
+      "pxVar": "",
+      "quickMgnType": "",
+      "reduceOnly": "false",
+      "side": "buy",
+      "slOrdPx": "",
+      "slTriggerPx": "",
+      "slTriggerPxType": "",
+      "state": "live",
+      "subAlgoIdList": [],
+      "sz": "10",
+      "szLimit": "",
+      "tag": "",
+      "tdMode": "isolated",
+      "tgtCcy": "",
+      "timeInterval": "",
+      "tpOrdPx": "",
+      "tpTriggerPx": "",
+      "tpTriggerPxType": "",
+      "tradeQuoteCcy": "",
+      "triggerParams": [],
+      "triggerPx": "1717.9",
+      "triggerPxType": "last",
+      "triggerTime": "0",
+      "uTime": "1788174912979"
+    }
+  },
+  "triggerLifecycle": {
+    "before": {
+      "activePx": "",
+      "actualPx": "",
+      "actualSide": "",
+      "actualSz": "0",
+      "advChaseParams": [],
+      "advanceOrdType": "",
+      "aggressiveness": "",
+      "algoClOrdId": "",
+      "algoId": "3881328718756888576",
+      "amendPxOnTriggerType": "",
+      "attachAlgoOrds": [],
+      "cTime": "1788175009805",
+      "callbackRatio": "",
+      "callbackSpread": "",
+      "ccy": "USDT",
+      "chaseType": "",
+      "chaseVal": "",
+      "clOrdId": "",
+      "closeFraction": "",
+      "failCode": "0",
+      "instId": "ETH-USDT-SWAP",
+      "instType": "SWAP",
+      "isTradeBorrowMode": "false",
+      "last": "2451.71",
+      "lever": "10",
+      "linkedOrd": {
+        "ordId": ""
+      },
+      "lmtOrderNumber": "",
+      "maxChaseType": "",
+      "maxChaseVal": "",
+      "moveTriggerPx": "",
+      "ordId": "",
+      "ordIdList": [],
+      "ordPx": "-1",
+      "ordType": "trigger",
+      "posSide": "long",
+      "pxLimit": "",
+      "pxSpread": "",
+      "pxVar": "",
+      "quickMgnType": "",
+      "reduceOnly": "false",
+      "side": "buy",
+      "slOrdPx": "",
+      "slTriggerPx": "",
+      "slTriggerPxType": "",
+      "state": "live",
+      "subAlgoIdList": [],
+      "sz": "2",
+      "szLimit": "",
+      "tag": "",
+      "tdMode": "isolated",
+      "tgtCcy": "",
+      "timeInterval": "",
+      "tpOrdPx": "",
+      "tpTriggerPx": "",
+      "tpTriggerPxType": "",
+      "tradeQuoteCcy": "",
+      "triggerParams": [],
+      "triggerPx": "2451.68",
+      "triggerPxType": "last",
+      "triggerTime": "0",
+      "uTime": "1788175009805"
+    },
+    "after": {
+      "activePx": "",
+      "actualPx": "",
+      "actualSide": "",
+      "actualSz": "2",
+      "advChaseParams": [],
+      "advanceOrdType": "",
+      "aggressiveness": "",
+      "algoClOrdId": "",
+      "algoId": "3881328718756888576",
+      "amendPxOnTriggerType": "",
+      "attachAlgoOrds": [],
+      "cTime": "1788175009805",
+      "callbackRatio": "",
+      "callbackSpread": "",
+      "ccy": "USDT",
+      "chaseType": "",
+      "chaseVal": "",
+      "clOrdId": "",
+      "closeFraction": "",
+      "failCode": "0",
+      "instId": "ETH-USDT-SWAP",
+      "instType": "SWAP",
+      "isTradeBorrowMode": "false",
+      "last": "2451.71",
+      "lever": "10",
+      "linkedOrd": {
+        "ordId": ""
+      },
+      "lmtOrderNumber": "",
+      "maxChaseType": "",
+      "maxChaseVal": "",
+      "moveTriggerPx": "",
+      "ordId": "3881329102208774145",
+      "ordIdList": [],
+      "ordPx": "-1",
+      "ordType": "trigger",
+      "posSide": "long",
+      "pxLimit": "",
+      "pxSpread": "",
+      "pxVar": "",
+      "quickMgnType": "",
+      "reduceOnly": "false",
+      "side": "buy",
+      "slOrdPx": "",
+      "slTriggerPx": "",
+      "slTriggerPxType": "",
+      "state": "effective",
+      "subAlgoIdList": [],
+      "sz": "2",
+      "szLimit": "",
+      "tag": "",
+      "tdMode": "isolated",
+      "tgtCcy": "",
+      "timeInterval": "",
+      "tpOrdPx": "",
+      "tpTriggerPx": "",
+      "tpTriggerPxType": "",
+      "tradeQuoteCcy": "",
+      "triggerParams": [],
+      "triggerPx": "2451.68",
+      "triggerPxType": "last",
+      "triggerTime": "1788175021199",
+      "uTime": "1788175021199"
+    },
+    "linkedOrder": {
+      "accFillSz": "2",
+      "algoClOrdId": "",
+      "algoId": "3881328718756888576",
+      "attachAlgoClOrdId": "",
+      "attachAlgoOrds": [],
+      "avgPx": "2451.67",
+      "cTime": "1788175021196",
+      "cancelSource": "",
+      "cancelSourceReason": "",
+      "category": "normal",
+      "ccy": "USDT",
+      "clOrdId": "O3881329102053038080",
+      "fee": "-0.245167",
+      "feeCcy": "USDT",
+      "fillPx": "2451.67",
+      "fillSz": "2",
+      "fillTime": "1788175021196",
+      "instId": "ETH-USDT-SWAP",
+      "instType": "SWAP",
+      "isTpLimit": "false",
+      "lever": "10",
+      "linkedAlgoOrd": {
+        "algoId": ""
+      },
+      "ordId": "3881329102208774145",
+      "ordType": "market",
+      "outcome": "",
+      "pnl": "0",
+      "posSide": "long",
+      "px": "",
+      "pxType": "",
+      "pxUsd": "",
+      "pxVol": "",
+      "quickMgnType": "",
+      "rebate": "0",
+      "rebateCcy": "USDT",
+      "reduceOnly": "false",
+      "side": "buy",
+      "slOrdPx": "",
+      "slTriggerPx": "",
+      "slTriggerPxType": "",
+      "slippage": "0",
+      "source": "6",
+      "state": "filled",
+      "stpId": "",
+      "stpMode": "cancel_maker",
+      "sz": "2",
+      "tag": "",
+      "tdMode": "isolated",
+      "tgtCcy": "",
+      "tpOrdPx": "",
+      "tpTriggerPx": "",
+      "tpTriggerPxType": "",
+      "tradeId": "3361103202",
+      "tradeQuoteCcy": "",
+      "uTime": "1788175021196"
+    },
+    "positionAfter": [
+      {
+        "adl": "1",
+        "availPos": "2",
+        "avgPx": "2451.67",
+        "baseBal": "",
+        "baseBorrowed": "",
+        "baseInterest": "",
+        "bePx": "2454.1228964482243",
+        "bizRefId": "",
+        "bizRefType": "",
+        "cTime": "1788175021196",
+        "ccy": "USDT",
+        "clSpotInUseAmt": "",
+        "closeAllFlag": "0",
+        "closeOrderAlgo": [],
+        "deltaBS": "",
+        "deltaPA": "",
+        "estMaxWin": "",
+        "fee": "-0.245167",
+        "fundingFee": "0",
+        "gammaBS": "",
+        "gammaPA": "",
+        "hedgedPos": "",
+        "idxPx": "2453.5193",
+        "imr": "",
+        "instId": "ETH-USDT-SWAP",
+        "instType": "SWAP",
+        "interest": "",
+        "last": "2452.75",
+        "lever": "10",
+        "liab": "",
+        "liabCcy": "",
+        "liqPenalty": "0",
+        "liqPx": "2216.4871471622305",
+        "margin": "49.0334",
+        "markPx": "2452.85",
+        "maxSpotInUseAmt": "",
+        "mgnMode": "isolated",
+        "mgnRatio": "22.318436829719605",
+        "mmr": "1.96228",
+        "nonSettleAvgPx": "",
+        "notionalUsd": "490.3884891",
+        "optVal": "",
+        "pendingCloseOrdLiabVal": "",
+        "pnl": "0",
+        "pos": "2",
+        "posCcy": "",
+        "posId": "3733742730691092480",
+        "posSide": "long",
+        "quoteBal": "",
+        "quoteBorrowed": "",
+        "quoteInterest": "",
+        "realizedPnl": "-0.245167",
+        "ruleType": "normal",
+        "settledPnl": "",
+        "spotInUseAmt": "",
+        "spotInUseCcy": "",
+        "thetaBS": "",
+        "thetaPA": "",
+        "tradeId": "3361103202",
+        "uTime": "1788175021196",
+        "upl": "0.2359999999999673",
+        "uplLastPx": "0.2159999999999855",
+        "uplRatio": "0.0048130458014328",
+        "uplRatioLastPx": "0.0044051605640227",
+        "usdPx": "0.99963",
+        "vegaBS": "",
+        "vegaPA": ""
+      }
+    ]
+  },
+  "conditional": {
+    "activePx": "",
+    "actualPx": "",
+    "actualSide": "",
+    "actualSz": "0",
+    "advChaseParams": [],
+    "advanceOrdType": "",
+    "aggressiveness": "",
+    "algoClOrdId": "",
+    "algoId": "3881329483420676097",
+    "amendPxOnTriggerType": "0",
+    "attachAlgoOrds": [],
+    "cTime": "1788175032557",
+    "callbackRatio": "",
+    "callbackSpread": "",
+    "ccy": "USDT",
+    "chaseType": "",
+    "chaseVal": "",
+    "clOrdId": "",
+    "closeFraction": "",
+    "failCode": "0",
+    "instId": "ETH-USDT-SWAP",
+    "instType": "SWAP",
+    "isTradeBorrowMode": "",
+    "last": "2453.17",
+    "lever": "10",
+    "linkedOrd": {
+      "ordId": ""
+    },
+    "lmtOrderNumber": "",
+    "maxChaseType": "",
+    "maxChaseVal": "",
+    "moveTriggerPx": "",
+    "ordId": "",
+    "ordIdList": [],
+    "ordPx": "",
+    "ordType": "conditional",
+    "posSide": "long",
+    "pxLimit": "",
+    "pxSpread": "",
+    "pxVar": "",
+    "quickMgnType": "",
+    "reduceOnly": "true",
+    "side": "sell",
+    "slOrdPx": "-1",
+    "slTriggerPx": "2330.12",
+    "slTriggerPxType": "last",
+    "state": "live",
+    "subAlgoIdList": [],
+    "sz": "2",
+    "szLimit": "",
+    "tag": "",
+    "tdMode": "isolated",
+    "tgtCcy": "",
+    "timeInterval": "",
+    "tpOrdPx": "",
+    "tpTriggerPx": "",
+    "tpTriggerPxType": "",
+    "tradeQuoteCcy": "",
+    "triggerParams": [],
+    "triggerPx": "",
+    "triggerPxType": "",
+    "triggerTime": "",
+    "uTime": "1788175032557"
+  },
+  "moveOrderStop": {
+    "activePx": "",
+    "actualPx": "",
+    "actualSide": "",
+    "actualSz": "",
+    "advChaseParams": [],
+    "advanceOrdType": "",
+    "aggressiveness": "",
+    "algoClOrdId": "",
+    "algoId": "3881329577515438080",
+    "amendPxOnTriggerType": "",
+    "attachAlgoOrds": [],
+    "cTime": "1788175035398",
+    "callbackRatio": "0.05",
+    "callbackSpread": "",
+    "ccy": "USDT",
+    "chaseType": "",
+    "chaseVal": "",
+    "clOrdId": "",
+    "closeFraction": "",
+    "failCode": "0",
+    "instId": "ETH-USDT-SWAP",
+    "instType": "SWAP",
+    "isTradeBorrowMode": "false",
+    "last": "2453.04",
+    "lever": "10",
+    "linkedOrd": {
+      "ordId": ""
+    },
+    "lmtOrderNumber": "",
+    "maxChaseType": "",
+    "maxChaseVal": "",
+    "moveTriggerPx": "2330.3880",
+    "ordId": "",
+    "ordIdList": [],
+    "ordPx": "",
+    "ordType": "move_order_stop",
+    "posSide": "long",
+    "pxLimit": "",
+    "pxSpread": "",
+    "pxVar": "",
+    "quickMgnType": "",
+    "reduceOnly": "true",
+    "side": "sell",
+    "slOrdPx": "",
+    "slTriggerPx": "",
+    "slTriggerPxType": "",
+    "state": "live",
+    "subAlgoIdList": [],
+    "sz": "2",
+    "szLimit": "",
+    "tag": "",
+    "tdMode": "isolated",
+    "tgtCcy": "",
+    "timeInterval": "",
+    "tpOrdPx": "",
+    "tpTriggerPx": "",
+    "tpTriggerPxType": "",
+    "tradeQuoteCcy": "",
+    "triggerParams": [],
+    "triggerPx": "",
+    "triggerPxType": "",
+    "triggerTime": "",
+    "uTime": "1788175035398"
+  },
+  "oco": {
+    "activePx": "",
+    "actualPx": "",
+    "actualSide": "",
+    "actualSz": "0",
+    "advChaseParams": [],
+    "advanceOrdType": "",
+    "aggressiveness": "",
+    "algoClOrdId": "",
+    "algoId": "3881345319367749633",
+    "amendPxOnTriggerType": "0",
+    "attachAlgoOrds": [],
+    "cTime": "1788175504505",
+    "callbackRatio": "",
+    "callbackSpread": "",
+    "ccy": "USDT",
+    "chaseType": "",
+    "chaseVal": "",
+    "clOrdId": "",
+    "closeFraction": "",
+    "failCode": "0",
+    "instId": "ETH-USDT-SWAP",
+    "instType": "SWAP",
+    "isTradeBorrowMode": "",
+    "last": "2453.66",
+    "lever": "10",
+    "linkedOrd": {
+      "ordId": ""
+    },
+    "lmtOrderNumber": "",
+    "maxChaseType": "",
+    "maxChaseVal": "",
+    "moveTriggerPx": "",
+    "ordId": "",
+    "ordIdList": [],
+    "ordPx": "",
+    "ordType": "oco",
+    "posSide": "long",
+    "pxLimit": "",
+    "pxSpread": "",
+    "pxVar": "",
+    "quickMgnType": "",
+    "reduceOnly": "true",
+    "side": "sell",
+    "slOrdPx": "-1",
+    "slTriggerPx": "2330.28",
+    "slTriggerPxType": "last",
+    "state": "live",
+    "subAlgoIdList": [],
+    "sz": "2",
+    "szLimit": "",
+    "tag": "",
+    "tdMode": "isolated",
+    "tgtCcy": "",
+    "timeInterval": "",
+    "tpOrdPx": "-1",
+    "tpTriggerPx": "2578.12",
+    "tpTriggerPxType": "mark",
+    "tradeQuoteCcy": "",
+    "triggerParams": [],
+    "triggerPx": "",
+    "triggerPxType": "",
+    "triggerTime": "",
+    "uTime": "1788175504505"
+  },
+  "trailingTrack": {
+    "callbackRatio": "0.03",
+    "range": {
+      "hi": "2455.35",
+      "lo": "2452.93"
+    },
+    "samples": [
+      {
+        "i": 0,
+        "last": "2454.02",
+        "hi": "2454.02",
+        "lo": "2454.02",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2380.6516"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2527.0741"
+        }
+      },
+      {
+        "i": 1,
+        "last": "2454.3",
+        "hi": "2454.3",
+        "lo": "2454.02",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2380.8456"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 2,
+        "last": "2455.31",
+        "hi": "2455.31",
+        "lo": "2454.02",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2381.6604"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 3,
+        "last": "2454.64",
+        "hi": "2455.31",
+        "lo": "2454.02",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2381.7477"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 4,
+        "last": "2455.35",
+        "hi": "2455.35",
+        "lo": "2454.02",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2381.7477"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 5,
+        "last": "2454.91",
+        "hi": "2455.35",
+        "lo": "2454.02",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2381.7477"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 6,
+        "last": "2455.11",
+        "hi": "2455.35",
+        "lo": "2454.02",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2381.7477"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 7,
+        "last": "2454.84",
+        "hi": "2455.35",
+        "lo": "2454.02",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 8,
+        "last": "2455.06",
+        "hi": "2455.35",
+        "lo": "2454.02",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 9,
+        "last": "2455.23",
+        "hi": "2455.35",
+        "lo": "2454.02",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 10,
+        "last": "2455.3",
+        "hi": "2455.35",
+        "lo": "2454.02",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 11,
+        "last": "2454.7",
+        "hi": "2455.35",
+        "lo": "2454.02",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 12,
+        "last": "2454.67",
+        "hi": "2455.35",
+        "lo": "2454.02",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 13,
+        "last": "2454.5",
+        "hi": "2455.35",
+        "lo": "2454.02",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 14,
+        "last": "2454.5",
+        "hi": "2455.35",
+        "lo": "2454.02",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 15,
+        "last": "2454.09",
+        "hi": "2455.35",
+        "lo": "2454.02",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 16,
+        "last": "2453.96",
+        "hi": "2455.35",
+        "lo": "2453.96",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 17,
+        "last": "2454.07",
+        "hi": "2455.35",
+        "lo": "2453.96",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 18,
+        "last": "2454.17",
+        "hi": "2455.35",
+        "lo": "2453.96",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 19,
+        "last": "2454.3",
+        "hi": "2455.35",
+        "lo": "2453.96",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 20,
+        "last": "2453.45",
+        "hi": "2455.35",
+        "lo": "2453.45",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 21,
+        "last": "2453.53",
+        "hi": "2455.35",
+        "lo": "2453.45",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 22,
+        "last": "2453.43",
+        "hi": "2455.35",
+        "lo": "2453.43",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 23,
+        "last": "2453.43",
+        "hi": "2455.35",
+        "lo": "2453.43",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 24,
+        "last": "2452.93",
+        "hi": "2455.35",
+        "lo": "2452.93",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 25,
+        "last": "2453.39",
+        "hi": "2455.35",
+        "lo": "2452.93",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 26,
+        "last": "2453.76",
+        "hi": "2455.35",
+        "lo": "2452.93",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 27,
+        "last": "2453.95",
+        "hi": "2455.35",
+        "lo": "2452.93",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 28,
+        "last": "2454",
+        "hi": "2455.35",
+        "lo": "2452.93",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 29,
+        "last": "2453.94",
+        "hi": "2455.35",
+        "lo": "2452.93",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 30,
+        "last": "2453.33",
+        "hi": "2455.35",
+        "lo": "2452.93",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 31,
+        "last": "2453.41",
+        "hi": "2455.35",
+        "lo": "2452.93",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 32,
+        "last": "2453.32",
+        "hi": "2455.35",
+        "lo": "2452.93",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 33,
+        "last": "2453.02",
+        "hi": "2455.35",
+        "lo": "2452.93",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 34,
+        "last": "2453.56",
+        "hi": "2455.35",
+        "lo": "2452.93",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 35,
+        "last": "2453.17",
+        "hi": "2455.35",
+        "lo": "2452.93",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 36,
+        "last": "2453.08",
+        "hi": "2455.35",
+        "lo": "2452.93",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 37,
+        "last": "2453.33",
+        "hi": "2455.35",
+        "lo": "2452.93",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 38,
+        "last": "2453.67",
+        "hi": "2455.35",
+        "lo": "2452.93",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      },
+      {
+        "i": 39,
+        "last": "2453.82",
+        "hi": "2455.35",
+        "lo": "2452.93",
+        "long": {
+          "state": "live",
+          "moveTriggerPx": "2382.3200"
+        },
+        "short": {
+          "state": "live",
+          "moveTriggerPx": "2525.5600"
+        }
+      }
+    ]
+  }
+}
