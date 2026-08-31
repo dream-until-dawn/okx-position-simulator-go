@@ -387,3 +387,58 @@ func TestSetPositionValidates(t *testing.T) {
 		t.Error("置入空仓应当删除该仓位")
 	}
 }
+
+// TestAdjustMarginFloorCountsUnrealizedLoss 锁定「浮亏吃掉可减额」。
+//
+// 下限是「减完之后【仓位权益】不得低于开仓初始保证金」，而不是保证金本身。
+// 早先只在一个有浮盈的仓位上验过，于是漏掉了这一项——v0.9.0 最后一轮对拍时，
+// 一个浮亏的仓位上减掉全部 room 被 OKX 以 59301 拒绝，才把它照出来。
+func TestAdjustMarginFloorCountsUnrealizedLoss(t *testing.T) {
+	newPos := func(t *testing.T, markPx string) *Simulator {
+		t.Helper()
+		s := newSim(t, types.NetMode)
+		mustFill(t, s, netFill(types.Buy, "4", "78000"))
+		if err := s.SetMarkPx("BTC-USDT-SWAP", dec(markPx)); err != nil {
+			t.Fatal(err)
+		}
+		// 追加 100，制造可减空间
+		if err := s.AdjustMargin("BTC-USDT-SWAP", types.PosNet,
+			types.MarginAdd, dec("100")); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+
+	// 无浮盈浮亏：可减额就是刚追加的那 100
+	s := newPos(t, "78000")
+	if err := s.AdjustMargin("BTC-USDT-SWAP", types.PosNet,
+		types.MarginReduce, dec("100")); err != nil {
+		t.Errorf("没有浮亏时应当能把追加的 100 全减回去: %v", err)
+	}
+
+	// 浮亏 40（价格从 78000 跌到 77000，0.01×4 张）：可减额只剩 60
+	s = newPos(t, "77000")
+	m, err := s.MetricsOf("BTC-USDT-SWAP", types.PosNet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, m.UPL, "-40", "浮亏")
+
+	if err := s.AdjustMargin("BTC-USDT-SWAP", types.PosNet,
+		types.MarginReduce, dec("100")); err == nil {
+		t.Error("有 40 浮亏时不该还能减掉全部 100")
+	} else if !okxerr.HasCode(err, okxerr.CodeMarginAdjustExceeds) {
+		t.Errorf("错误码 = %v，期望 59301", err)
+	}
+	if err := s.AdjustMargin("BTC-USDT-SWAP", types.PosNet,
+		types.MarginReduce, dec("60")); err != nil {
+		t.Errorf("减 60（= 100 − 40 浮亏）应当可以: %v", err)
+	}
+
+	// 浮盈不会放大可减额——下限只由开仓初始保证金决定
+	s = newPos(t, "79000")
+	if err := s.AdjustMargin("BTC-USDT-SWAP", types.PosNet,
+		types.MarginReduce, dec("140")); err == nil {
+		t.Error("浮盈不应让可减额超过追加的部分加上原有空间")
+	}
+}

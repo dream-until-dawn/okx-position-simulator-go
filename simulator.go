@@ -524,11 +524,27 @@ func (s *Simulator) AdjustMargin(instID string, posSide types.PosSide,
 		return nil
 	}
 
+	// 可减额 = 保证金 − 开仓初始保证金 + min(0, 未实现盈亏)。
+	//
+	// 这条规则是**不对称的**，两侧都由实测确定：
+	//
+	//	浮亏  实打实地吃掉可减额。浮亏的仓位上减掉全部空间会被 OKX 以 59301 拒绝
+	//	浮盈  完全不放大可减额。实测一个保证金恰在下限、浮盈 +0.97 的仓位，
+	//	      最大可减额是 0 而不是 0.97
+	//
+	// 早先只在一个有浮盈的仓位上验过「减到恰好等于下限是允许的」，于是漏掉了
+	// 浮亏那一侧——v0.9.0 最后一轮对拍才把它照出来。
+	//
+	// 边界上还有一点未定：二分测出的上限比本式略高一点点（1e-2 量级），但测量
+	// 期间浮亏本身漂了同一量级，分辨不出是公式还有一项、还是取数时点所致。
+	// 本式偏保守，宁可少减一点也不放行 OKX 会拒绝的操作。见 docs/okx-rules.md。
 	floor := initialMargin(inst, pos.AbsPos(), pos.AvgPx, pos.Lever)
-	if pos.Margin.Sub(amt).LessThan(floor) {
+	upl := unrealizedPnl(inst, pos.SignedPos(), pos.AvgPx, s.markOf(instID, pos.AvgPx))
+	loss := decimal.Min(decimal.Zero, upl)
+	if room := pos.Margin.Sub(floor).Add(loss); amt.GreaterThan(room) {
 		return okxerr.New(okxerr.CodeMarginAdjustExceeds,
-			"%s 减少保证金 %s 后将低于开仓初始保证金 %s（当前 %s）",
-			instID, amt, floor, pos.Margin)
+			"%s 最多只能减少 %s（当前保证金 %s，开仓初始保证金 %s，未实现亏损 %s），实为 %s",
+			instID, room, pos.Margin, floor, loss, amt)
 	}
 	s.cash[inst.SettleCcy] = s.cash[inst.SettleCcy].Add(amt)
 	pos.Margin = pos.Margin.Sub(amt)
