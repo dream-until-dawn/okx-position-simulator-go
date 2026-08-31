@@ -257,3 +257,25 @@ func TestFundingAgainstRealBills(t *testing.T) {
 	}
 	t.Logf("复算了 %d 条真实资金费账单", checked)
 }
+
+// TestNoFundingByDefault 不传 Funding 即不计资金费，等价于零费率。
+//
+// 这是默认行为，也是绝大多数长周期回测的实际状态——历史费率只有约 3 个月，
+// 超出窗口就取不到真实费率。
+func TestNoFundingByDefault(t *testing.T) {
+	s := newSim(t, types.NetMode)
+	mustAdvance(t, s, bar("78000", "78000", "78000", 1))
+	r := mustFill(t, s, netFill(types.Buy, "10", "78000"))
+	margin := r.After.Margin
+
+	// 连推若干步，不给 Funding
+	for i := int64(2); i < 6; i++ {
+		step := mustAdvance(t, s, bar("78000", "78100", "77900", i))
+		if len(step.Fundings) != 0 {
+			t.Fatalf("未提供费率时不应产生资金费，实际 %+v", step.Fundings)
+		}
+	}
+	pos, _ := s.PositionOf("BTC-USDT-SWAP", types.PosNet)
+	eq(t, pos.Funding, "0", "累计资金费应为零")
+	eq(t, pos.Margin, margin.String(), "保证金不应被资金费侵蚀")
+}

@@ -89,6 +89,9 @@ step, _ := sim.Advance(okxsim.Bar{
 for _, f := range step.Fundings { /* 本步结算的资金费 */ }
 ```
 
+> **默认不计资金费。** `Bar.Funding` 留空即零费率——这是默认行为，也是绝大多数
+> 长周期回测的实际状态。不计资金费会系统性高估多头持仓的收益。
+>
 > ⚠️ **数据窗口限制：OKX 的历史资金费率只保留约 3 个月。**
 >
 > 实测 `funding-rate-history` 翻到底：BTC-USDT-SWAP / ETH-USDT-SWAP /
