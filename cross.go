@@ -1,6 +1,7 @@
 package okxsim
 
 import (
+	"github.com/dream-until-dawn/okx-position-simulator-go/okxerr"
 	"github.com/dream-until-dawn/okx-position-simulator-go/refdata"
 	"github.com/dream-until-dawn/okx-position-simulator-go/types"
 	"github.com/shopspring/decimal"
@@ -376,4 +377,85 @@ func (s *Simulator) availBalance(ccy string) (decimal.Decimal, error) {
 	isoOrdMargin, crossOrdMargin, ordFee := s.crossOrderFreeze(ccy)
 	imr = imr.Add(crossOrdMargin)
 	return s.cash[ccy].Add(crossUpl).Sub(imr).Sub(isoOrdMargin).Sub(ordFee), nil
+}
+
+// maxPosAtLever 返回某个方向上「持仓 + 同方向挂单 + 本单」的合计上限。
+//
+// 档位表的杠杆上限逐档递减，因此选定杠杆也就选定了持仓量的天花板：能用该杠杆的
+// 最高那一档，其 maxSz 即为上限。见 refdata.TierTable.MaxSizeAt。
+func (s *Simulator) maxPosAtLever(inst refdata.Instrument, mgnMode types.MgnMode,
+	posSide types.PosSide) (decimal.Decimal, error) {
+
+	tbl, err := refdata.TierTableFor(s.cfg.RefData, inst, mgnMode)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	return tbl.MaxSizeAt(s.Leverage(inst.InstID, mgnMode, posSide)), nil
+}
+
+// sameSideExposure 汇总某方向上已经占掉的额度：现有持仓，加上同方向的开仓挂单。
+//
+// 挂单要算进去是实测确定的——OKX 的 51004 报文里把它写得很明白：
+// 「the sum of current order size, position quantity in the same direction,
+// and pending orders in the same direction」。实测持仓 600 张、同方向挂单 300 张时
+// 再挂 200 张（合计 1100 > 1000）被拒，改挂 100 张（恰好 1000）通过。
+//
+// 只算开仓方向的挂单：平仓方向的委托会让持仓变小，不占额度。
+func (s *Simulator) sameSideExposure(instID string, posSide types.PosSide,
+	side types.Side) decimal.Decimal {
+
+	var out decimal.Decimal
+	if p, ok := s.pos[positionKey{instID, posSide}]; ok {
+		out = p.AbsPos()
+	}
+	for _, o := range s.pending {
+		if o.Order.InstID != instID || o.Order.PosSide != posSide {
+			continue
+		}
+		if o.Order.Side != side {
+			continue
+		}
+		out = out.Add(o.Cost.OpenSz)
+	}
+	return out
+}
+
+// checkPosLimitAtLever 校验一笔新的开仓量会不会超出当前杠杆下的最大持仓量。
+//
+// 不校验会让模拟器走到一个 OKX 根本不允许存在的状态：比如一档顶格杠杆开满之后
+// 再加一张，仓位落进二档、按二档的维持保证金率计算，而二档的杠杆上限根本容不下
+// 这个杠杆。那样算出来的风险指标看着正常，实盘却下不出这一单。
+func (s *Simulator) checkPosLimitAtLever(inst refdata.Instrument, mgnMode types.MgnMode,
+	posSide types.PosSide, side types.Side, openSz decimal.Decimal) error {
+
+	if !openSz.IsPositive() {
+		return nil
+	}
+	limit, err := s.maxPosAtLever(inst, mgnMode, posSide)
+	if err != nil {
+		return err
+	}
+	if !limit.IsPositive() {
+		return nil
+	}
+	have := s.sameSideExposure(inst.InstID, posSide, side)
+	if total := have.Add(openSz); total.GreaterThan(limit) {
+		return okxerr.New(okxerr.CodeExceedsMaxPosAtLever,
+			"%s %s：持仓 %s + 同方向挂单与本单 %s = %s 张，超过 %s 倍杠杆下的最大持仓量 %s 张"+
+				"——请降低杠杆或减小数量",
+			inst.InstID, posSide, have, openSz, total,
+			s.Leverage(inst.InstID, mgnMode, posSide), limit)
+	}
+	return nil
+}
+
+// openSideOf 返回某个持仓方向上「开仓」对应的买卖方向。
+//
+// 买卖模式（net）下没有固定答案——同一个净仓位既可能是多头也可能是空头，
+// 此处按当前持仓的符号判断，没有持仓时取买入。
+func openSideOf(posSide types.PosSide) types.Side {
+	if posSide == types.PosShort {
+		return types.Sell
+	}
+	return types.Buy
 }

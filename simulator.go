@@ -165,12 +165,24 @@ func (s *Simulator) SetLeverage(instID string, mgnMode types.MgnMode,
 		return err
 	}
 	if max := tbl.MaxLeverage(); lever.GreaterThan(max) {
-		return okxerr.New(okxerr.CodeParamError,
+		return okxerr.New(okxerr.CodeLeverTooHigh,
 			"lever: %s 的杠杆 %s 超过上限 %s", instID, lever, max)
 	}
 	side, err := s.normalizePosSide(posSide)
 	if err != nil {
 		return err
+	}
+
+	// 提高杠杆会压低最大持仓量，现有持仓与同方向挂单可能一下子就超了。
+	// 实测 OKX 此时返回 59247 并拒绝改杠杆，而不是把仓位强制减掉。
+	if limit := tbl.MaxSizeAt(lever); limit.IsPositive() {
+		have := s.sameSideExposure(instID, side, openSideOf(side))
+		if have.GreaterThan(limit) {
+			return okxerr.New(okxerr.CodeLeverExceedsPosLimit,
+				"%s %s：现有持仓与同方向挂单合计 %s 张，超过 %s 倍杠杆下的最大持仓量 %s 张"+
+					"——请先减仓或改用更低的杠杆",
+				instID, side, have, lever, limit)
+		}
 	}
 	s.lever[leverageKey{instID, mgnMode, side}] = lever
 	return nil
@@ -275,6 +287,12 @@ func (s *Simulator) Fill(f Fill) (FillResult, error) {
 	}
 
 	res := applyFill(pos, f, inst, feeRate, s.cfg.PosMode)
+
+	// 当前杠杆下有一个最大持仓量，超了 OKX 会直接拒单（51004）。
+	// 放行会让模拟器走到一个真实账户上不可能存在的状态，见 checkPosLimitAtLever。
+	if err := s.checkPosLimitAtLever(inst, mgnMode, side, f.Side, res.OpenedSz); err != nil {
+		return FillResult{}, err
+	}
 
 	// 开仓部分的名义价值按成交价计——保证金是开仓那一刻定下的，
 	// 与随后的标记价变动无关。

@@ -1,6 +1,10 @@
 package okxsim
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/dream-until-dawn/okx-position-simulator-go/refdata"
@@ -306,4 +310,183 @@ func TestLiquidationInLongShortMode(t *testing.T) {
 	if _, ok := s.PositionOf("BTC-USDT-SWAP", types.PosShort); !ok {
 		t.Error("空头不该被牵连")
 	}
+}
+
+// tieredFixture 是 testdata/conformance/liquidation-tiered-isolated.json 的结构。
+type tieredFixture struct {
+	Instrument     json.RawMessage `json:"instrument"`
+	Tiers          json.RawMessage `json:"tiers"`
+	FeeRate        struct{ Maker, Taker string }
+	PositionBefore struct {
+		InstID, PosSide, Pos, AvgPx, Lever, Margin, LiqPx string
+	} `json:"positionBefore"`
+	Bills []struct {
+		SubType   string `json:"subType"`
+		Sz        string `json:"sz"`
+		Px        string `json:"px"`
+		Pnl       string `json:"pnl"`
+		Fee       string `json:"fee"`
+		PosBalChg string `json:"posBalChg"`
+		PosBal    string `json:"posBal"`
+		BalChg    string `json:"balChg"`
+	} `json:"bills"`
+}
+
+// TestTieredLiquidationAgainstRealEvent 用一次【真实的阶梯减仓】逐项对拍。
+//
+// 阶梯减仓此前是本项目仅存的几条未实测路径之一——触发它需要跨越多个档位的仓位，
+// 在模拟盘上布好二档纵深的仓位等了一段时间，行情自己走了过去。
+//
+// 真实序列是 部分强平(101) -> 全部强平(105) -> 穿仓补偿(108)：第一次减到一档上限
+// 后价格继续走，第二次才全平。这正是本库实现的链路。
+func TestTieredLiquidationAgainstRealEvent(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("testdata", "conformance",
+		"liquidation-tiered-isolated.json"))
+	if err != nil {
+		t.Fatalf("读取夹具失败: %v", err)
+	}
+	var fx tieredFixture
+	if err := json.Unmarshal(b, &fx); err != nil {
+		t.Fatalf("解析夹具失败: %v", err)
+	}
+	var inst refdata.Instrument
+	if err := json.Unmarshal(fx.Instrument, &inst); err != nil {
+		t.Fatal(err)
+	}
+	var tiers []refdata.PositionTier
+	if err := json.Unmarshal(fx.Tiers, &tiers); err != nil {
+		t.Fatal(err)
+	}
+	tbl, err := refdata.NewTierTable(refdata.TierKey{
+		InstType: types.InstSwap, MgnMode: types.MgnIsolated,
+		Family: inst.InstFamily}, tiers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := refdata.NewSnapshotBuilder(1).AddInstruments(inst).AddTierTable(tbl).
+		SetFeeSchedule(refdata.DefaultFeeSchedule().WithRate(types.InstSwap,
+			refdata.FeeRate{Maker: dec(fx.FeeRate.Maker), Taker: dec(fx.FeeRate.Taker)})).
+		Build()
+
+	s, err := New(Config{PosMode: types.LongShortMode, RefData: snap})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Deposit("USDT", dec("100000")); err != nil {
+		t.Fatal(err)
+	}
+	pb := fx.PositionBefore
+	if err := s.SetPosition(Position{
+		InstID: pb.InstID, MgnMode: types.MgnIsolated, PosSide: types.PosShort,
+		Pos: dec(pb.Pos), AvgPx: dec(pb.AvgPx), Lever: dec(pb.Lever),
+		Margin: dec(pb.Margin),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 两次真实的强平价与本库的两步一一对应
+	var stages []struct {
+		SubType   string
+		Sz        string
+		Px        string
+		Pnl       string
+		Fee       string
+		PosBalChg string
+	}
+	for _, bl := range fx.Bills {
+		if bl.SubType == "101" || bl.SubType == "105" {
+			stages = append(stages, struct {
+				SubType   string
+				Sz        string
+				Px        string
+				Pnl       string
+				Fee       string
+				PosBalChg string
+			}{bl.SubType, bl.Sz, bl.Px, bl.Pnl, bl.Fee, bl.PosBalChg})
+		}
+	}
+	if len(stages) != 2 {
+		t.Fatalf("夹具里应有两段强平，实为 %d 段", len(stages))
+	}
+
+	var totalLoss, totalExcess decimal.Decimal
+	for i, st := range stages {
+		// 把标记价推到真实成交价，触发这一段
+		step, err := s.Advance(Bar{
+			InstID: pb.InstID, Last: dec(st.Px), High: dec(st.Px), Low: dec(st.Px),
+			MarkPx: dec(st.Px), Ts: int64(i + 1),
+		})
+		if err != nil {
+			t.Fatalf("第 %d 段推进失败: %v", i+1, err)
+		}
+		if len(step.Liquidations) != 1 {
+			t.Fatalf("第 %d 段应当发生一次强平，实为 %d 次", i+1, len(step.Liquidations))
+		}
+		l := step.Liquidations[0]
+
+		wantKind := LiqPartial
+		if st.SubType == "105" {
+			wantKind = LiqFull
+		}
+		if l.Kind != wantKind {
+			t.Errorf("第 %d 段的类型 = %s，OKX 的 subType=%s 对应 %s",
+				i+1, l.Kind, st.SubType, wantKind)
+		}
+		eq(t, l.Sz, st.Sz, fmt.Sprintf("第 %d 段的张数", i+1))
+		near(t, l.Pnl, dec(st.Pnl), "0.0000001", fmt.Sprintf("第 %d 段的盈亏", i+1))
+		near(t, l.Fee, dec(st.Fee), "0.0000001", fmt.Sprintf("第 %d 段的手续费", i+1))
+
+		// posBalChg = 盈亏 + 手续费 + 罚金，是仓位保证金的净变化
+		wantChg := dec(st.PosBalChg)
+		gotChg := l.Pnl.Add(l.Fee).Add(l.Penalty)
+		near(t, gotChg, wantChg, "0.0000001",
+			fmt.Sprintf("第 %d 段的仓位保证金变化（含罚金）", i+1))
+
+		totalLoss = totalLoss.Add(l.Loss)
+		totalExcess = totalExcess.Add(l.Excess)
+	}
+
+	// 损失封顶为仓位保证金，超出部分退回——真实账单里是一条 subType=108 的补偿
+	near(t, totalLoss, dec(pb.Margin), "0.0000001", "两段合计的损失应恰好等于仓位保证金")
+	var wantExcess decimal.Decimal
+	for _, bl := range fx.Bills {
+		if bl.SubType == "108" {
+			wantExcess = dec(bl.Sz)
+		}
+	}
+	near(t, totalExcess, wantExcess, "0.0000001", "由风险准备金退回的超额部分")
+
+	if _, ok := s.PositionOf(pb.InstID, types.PosShort); ok {
+		t.Error("两段之后仓位应当已全平")
+	}
+}
+
+// TestTieredReductionPenaltyUsesLowerTier 锁定罚金按【减仓后】的档位收。
+//
+// 这是真实事件与本库原实现唯一对不上的地方：减仓前在二档（mmr 0.015）、减仓后在
+// 一档（0.01），实际罚金 170.225 / 名义 17022.5 = 0.01。按减仓前算会多收 85.11。
+func TestTieredReductionPenaltyUsesLowerTier(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("testdata", "conformance",
+		"liquidation-tiered-isolated.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fx tieredFixture
+	if err := json.Unmarshal(b, &fx); err != nil {
+		t.Fatal(err)
+	}
+	for _, bl := range fx.Bills {
+		if bl.SubType != "101" {
+			continue
+		}
+		// 罚金 = −(posBalChg − pnl − fee)
+		pen := dec(bl.PosBalChg).Sub(dec(bl.Pnl)).Sub(dec(bl.Fee)).Neg()
+		nom := dec(bl.Sz).Mul(dec("0.1")).Mul(dec(bl.Px))
+		rate := div(pen, nom)
+		eq(t, rate.Round(6), "0.01", "阶梯减仓的罚金率（= 减仓后的一档，不是减仓前的二档）")
+		// 按减仓前的 0.015 会多收多少
+		eq(t, nom.Mul(dec("0.015")).Sub(pen).Round(4), "85.1125", "按减仓前算会多出的罚金")
+		return
+	}
+	t.Fatal("夹具里没有 subType=101 的部分强平账单")
 }

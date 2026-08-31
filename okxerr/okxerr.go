@@ -36,6 +36,22 @@ const (
 	// 实测触发条件：减少逐仓保证金，使其低于开仓时的初始保证金
 	// （即让有效杠杆超过设定杠杆）。
 	CodeMarginAdjustExceeds = "59301" // Margin adjustment failed because it exceeds the maximum limit
+
+	// CodeExceedsMaxPosAtLever 表示「持仓 + 同方向挂单 + 本单」超过了当前杠杆
+	// 所允许的最大持仓量。
+	//
+	// 实测：MASK-USDT-SWAP 一档 [0,1000] 杠杆≤50、二档 [1001,2500] 杠杆≤40。
+	// 在 50 倍杠杆下持仓 600 张、同方向挂单 300 张时，再挂 200 张（合计 1100）被拒，
+	// 改挂 100 张（合计恰好 1000）通过。
+	CodeExceedsMaxPosAtLever = "51004" // 超过当前杠杆下的最大持仓量
+
+	// CodeLeverTooHigh 表示设置的杠杆超过该品种的上限。
+	CodeLeverTooHigh = "59102" // Leverage exceeds the maximum limit
+
+	// CodeLeverExceedsPosLimit 表示提高杠杆会让【现有持仓】超过新杠杆下的最大持仓量。
+	//
+	// 与 51004 是同一条规则的两个方向：一个卡下单，一个卡调杠杆。
+	CodeLeverExceedsPosLimit = "59247" // High leverage causes current position to exceed the limit
 )
 
 // Error 是携带 OKX 错误码的错误。
