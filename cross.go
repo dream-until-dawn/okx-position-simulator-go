@@ -54,16 +54,30 @@ func (s *Simulator) crossTierSizes() (map[familyKey]decimal.Decimal, error) {
 //	      每个仓位一体适用。实测两个交割期各持 7000 张，先开的那条腿一张未动，
 //	      仅因另一期开了仓，其维持保证金率就从 0.01 跳到 0.015。
 func (s *Simulator) tierOf(pos Position, inst refdata.Instrument) (refdata.PositionTier, error) {
+	var sizes map[familyKey]decimal.Decimal
+	if pos.MgnMode == types.MgnCross {
+		var err error
+		if sizes, err = s.crossTierSizes(); err != nil {
+			return refdata.PositionTier{}, err
+		}
+	}
+	return s.tierWith(pos, inst, sizes)
+}
+
+// tierWith 与 tierOf 相同，但复用调用方已经算好的合并张数。
+//
+// 分出这个版本是为了性能：合并张数要遍历全部仓位，而在一个已经在遍历仓位的循环里
+// 逐个调用 tierOf，复杂度就是仓位数的平方。实测四个全仓仓位时，crossTierSizes 占
+// 一次 Fill 的 13%，而它算出来的东西每次都一样。
+func (s *Simulator) tierWith(pos Position, inst refdata.Instrument,
+	sizes map[familyKey]decimal.Decimal) (refdata.PositionTier, error) {
+
 	tbl, err := refdata.TierTableFor(s.cfg.RefData, inst, pos.MgnMode)
 	if err != nil {
 		return refdata.PositionTier{}, err
 	}
 	sz := pos.AbsPos()
-	if pos.MgnMode == types.MgnCross {
-		sizes, err := s.crossTierSizes()
-		if err != nil {
-			return refdata.PositionTier{}, err
-		}
+	if pos.MgnMode == types.MgnCross && sizes != nil {
 		if merged, ok := sizes[familyKey{inst.InstType, inst.InstFamily}]; ok {
 			sz = merged
 		}
@@ -117,6 +131,13 @@ func (m CrossMetrics) IsLiquidatable() bool {
 func (s *Simulator) CrossMetricsOf(ccy string) (CrossMetrics, error) {
 	m := CrossMetrics{Ccy: ccy, CashBal: s.cash[ccy]}
 
+	// 合并张数只算一次，随后传给每个仓位复用——它遍历全部仓位，放在循环里
+	// 就是仓位数的平方。
+	sizes, err := s.crossTierSizes()
+	if err != nil {
+		return CrossMetrics{}, err
+	}
+
 	for _, p := range s.pos {
 		if p.MgnMode != types.MgnCross {
 			continue
@@ -128,7 +149,7 @@ func (s *Simulator) CrossMetricsOf(ccy string) (CrossMetrics, error) {
 		if inst.SettleCcy != ccy {
 			continue
 		}
-		tier, err := s.tierOf(p, inst)
+		tier, err := s.tierWith(p, inst, sizes)
 		if err != nil {
 			return CrossMetrics{}, err
 		}
@@ -325,4 +346,34 @@ func (s *Simulator) crossOrderFreeze(ccy string) (isoMargin, crossMargin, fee de
 		fee = fee.Add(o.Cost.Fee)
 	}
 	return isoMargin, crossMargin, fee
+}
+
+// availBalance 只算可用余额，不算保证金率、平仓手续费与强平价。
+//
+// Fill 的资金校验只需要这一个数，而完整的 Balance 会顺带算出一堆它用不上的东西：
+// 维持保证金要逐仓位查档、强平价要解方程。实测四个全仓仓位时，Balance 占一次
+// Fill 耗时的 52%，其中大部分花在这些用不上的项上。
+//
+// 关键的一点是**可用余额根本不需要查档**：初始保证金是名义除以杠杆，与档位无关；
+// 只有维持保证金才要档位。省掉查档也就省掉了合并张数的那一遍遍历。
+func (s *Simulator) availBalance(ccy string) (decimal.Decimal, error) {
+	var crossUpl, imr decimal.Decimal
+	for _, p := range s.pos {
+		if p.MgnMode != types.MgnCross {
+			continue
+		}
+		inst, err := s.cfg.RefData.Instrument(p.InstID)
+		if err != nil {
+			return decimal.Zero, err
+		}
+		if inst.SettleCcy != ccy {
+			continue
+		}
+		markPx := s.markOf(p.InstID, p.AvgPx)
+		crossUpl = crossUpl.Add(unrealizedPnl(inst, p.SignedPos(), p.AvgPx, markPx))
+		imr = imr.Add(div(notional(inst, p.AbsPos(), markPx), p.Lever))
+	}
+	isoOrdMargin, crossOrdMargin, ordFee := s.crossOrderFreeze(ccy)
+	imr = imr.Add(crossOrdMargin)
+	return s.cash[ccy].Add(crossUpl).Sub(imr).Sub(isoOrdMargin).Sub(ordFee), nil
 }
