@@ -8,7 +8,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// 本文件实现逐仓强平。
+// 本文件实现强平：逐仓是仓位级的，全仓是结算币种级的。
 //
 // 触发判据与强平价均已在真实仓位上标定（五个独立样本，横跨 tickSz 三个量级、
 // 杠杆 5x 与 50x、多空两侧，公式与 OKX 的差值在 1e-16 至 1e-19）。
@@ -28,6 +28,7 @@ const (
 type Liquidation struct {
 	InstID  string
 	PosSide types.PosSide
+	MgnMode types.MgnMode // 触发方式：逐仓是仓位级的，全仓是结算币种级的
 	Kind    LiquidationKind
 
 	Sz      decimal.Decimal // 被平掉的张数
@@ -70,7 +71,13 @@ func (s *Simulator) checkLiquidation(instID string, ts int64) ([]Liquidation, er
 
 	for _, side := range s.cfg.PosMode.PosSides() {
 		key := positionKey{instID, side}
-		if pos, ok := s.pos[key]; !ok || pos.IsEmpty() {
+		pos, ok := s.pos[key]
+		if !ok || pos.IsEmpty() {
+			continue
+		}
+		// 全仓的强平是结算币种级的，走 checkCrossLiquidation。
+		// 放在这里会拿 pos.Margin 去算损失，而全仓的它恒为零。
+		if pos.MgnMode == types.MgnCross {
 			continue
 		}
 		m, err := s.MetricsOf(instID, side)
@@ -208,8 +215,8 @@ func (s *Simulator) liquidateFully(key positionKey, m Metrics, ts int64) (Liquid
 	penalty := nom.Mul(m.MMRRate).Neg()
 
 	liq := Liquidation{
-		InstID: key.instID, PosSide: key.posSide, Kind: LiqFull,
-		Sz: sz, Px: px, Pnl: pnl, Fee: fee, Penalty: penalty,
+		InstID: key.instID, PosSide: key.posSide, MgnMode: types.MgnIsolated,
+		Kind: LiqFull, Sz: sz, Px: px, Pnl: pnl, Fee: fee, Penalty: penalty,
 		MgnRatioBefore: m.MgnRatio, TierBefore: m.Tier, TierAfter: m.Tier,
 		Ts: ts,
 	}
@@ -284,8 +291,8 @@ func (s *Simulator) reduceToTier(key positionKey, m Metrics,
 		return Liquidation{}, err
 	}
 	return Liquidation{
-		InstID: key.instID, PosSide: key.posSide, Kind: LiqPartial,
-		Sz: cut, Px: px, Pnl: pnl, Fee: fee, Penalty: penalty, Loss: lost,
+		InstID: key.instID, PosSide: key.posSide, MgnMode: types.MgnIsolated,
+		Kind: LiqPartial, Sz: cut, Px: px, Pnl: pnl, Fee: fee, Penalty: penalty, Loss: lost,
 		MgnRatioBefore: m.MgnRatio, MgnRatioAfter: after.MgnRatio,
 		TierBefore: m.Tier, TierAfter: after.Tier, Ts: ts,
 	}, nil
@@ -300,4 +307,137 @@ func signOf(d decimal.Decimal) decimal.Decimal {
 		return decimal.NewFromInt(-1)
 	}
 	return decimal.Zero
+}
+
+// checkCrossLiquidation 检查某结算币种的全仓整体是否触及强平线。
+//
+// 全仓的风险是币种级的：同一结算币下的所有全仓仓位共担一份权益，因此触发判据也
+// 只有一个——该币种的全仓保证金率 ≤ 1。触发后该币种下的全仓仓位一并了结。
+//
+// ⚠️ **本路径尚未实测。** 触发判据本身是可靠的：保证金率的公式经 13 个真实快照
+// 逐项核对。但触发之后 OKX 究竟怎么了结，本项目没有观察到——真实全仓爆仓需要
+// 一个不带对冲的裸仓位吃掉整个币种的现金，而模拟盘上的资金规模不足以在可控时间内
+// 复现。故结算方式是照【已实测的逐仓强平】平移过来的：按标记价成交、收一笔吃单
+// 手续费、再收一笔等于维持保证金的罚金，损失封顶、超额由风险准备金承担。
+//
+// 与逐仓的两处必然差异：
+//
+//	损失的来源  逐仓损失的是划入仓位的保证金，现金不动；全仓的保证金从未离开现金，
+//	            故盈亏、手续费与罚金直接落在现金余额上
+//	封顶的口径  逐仓封顶为该仓位的保证金，全仓封顶为该币种的全仓权益
+//
+// **阶梯减仓在全仓下未建模**：本路径一律全平该币种的全部全仓仓位。真实 OKX 在
+// 全仓下也会先做阶梯减仓，那样的结果比全平温和；本实现偏保守，回测里表现为
+// 高估爆仓的杀伤力，而不是低估。见 docs/roadmap.md 的覆盖缺口。
+func (s *Simulator) checkCrossLiquidation(ccy string, ts int64) ([]Liquidation, error) {
+	cm, err := s.CrossMetricsOf(ccy)
+	if err != nil {
+		return nil, err
+	}
+	if !cm.IsLiquidatable() {
+		return nil, nil
+	}
+
+	keys := make([]positionKey, 0, len(s.pos))
+	for k, p := range s.pos {
+		if p.MgnMode != types.MgnCross {
+			continue
+		}
+		inst, err := s.cfg.RefData.Instrument(p.InstID)
+		if err != nil {
+			return nil, err
+		}
+		if inst.SettleCcy == ccy {
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	// 按 instId 与方向排序，使同一状态下的强平顺序可复现
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].instID != keys[j].instID {
+			return keys[i].instID < keys[j].instID
+		}
+		return keys[i].posSide < keys[j].posSide
+	})
+
+	canceled := s.cancelCrossOrders(ccy)
+
+	out := make([]Liquidation, 0, len(keys))
+	var charge decimal.Decimal
+	for _, key := range keys {
+		pos := s.pos[key]
+		inst, err := s.cfg.RefData.Instrument(key.instID)
+		if err != nil {
+			return nil, err
+		}
+		rate, err := s.fees.Rate(inst)
+		if err != nil {
+			return nil, err
+		}
+		tier, err := s.tierOf(pos, inst)
+		if err != nil {
+			return nil, err
+		}
+
+		px := s.markOf(key.instID, pos.AvgPx)
+		sz := pos.AbsPos()
+		nom := notional(inst, sz, px)
+		pnl := realizedPnl(inst, pos.SignedPos(), sz, pos.AvgPx, px)
+		fee := nom.Mul(rate.Taker.Abs()).Neg()
+		penalty := nom.Mul(tier.MMR).Neg()
+		charge = charge.Add(pnl).Add(fee).Add(penalty)
+
+		out = append(out, Liquidation{
+			InstID: key.instID, PosSide: key.posSide, MgnMode: types.MgnCross,
+			Kind: LiqFull, Sz: sz, Px: px, Pnl: pnl, Fee: fee, Penalty: penalty,
+			MgnRatioBefore: cm.MgnRatio, TierBefore: tier.Tier, TierAfter: tier.Tier,
+			Ts: ts,
+		})
+
+		pos.RealizedPnl = pos.RealizedPnl.Add(pnl)
+		pos.Fee = pos.Fee.Add(fee)
+		pos.LiqPenalty = pos.LiqPenalty.Add(penalty)
+		pos.UTime = ts
+		delete(s.pos, key)
+	}
+	out[len(out)-1].CanceledOrders = canceled
+
+	// 现金承接全部盈亏、手续费与罚金；跌破零的部分由风险准备金承担，
+	// 持仓方的损失封顶为该币种的全仓权益。
+	before := s.cash[ccy]
+	after := before.Add(charge)
+	var excess decimal.Decimal
+	if after.IsNegative() {
+		excess = after.Neg()
+		after = decimal.Zero
+	}
+	s.cash[ccy] = after
+
+	// 损失与超额按各仓位的消耗占比分摊，使各笔之和恰好等于整体
+	loss := before.Sub(after)
+	if total := charge.Neg(); total.IsPositive() {
+		for i := range out {
+			share := div(out[i].Pnl.Add(out[i].Fee).Add(out[i].Penalty).Neg(), total)
+			out[i].Loss = loss.Mul(share)
+			out[i].Excess = excess.Mul(share)
+		}
+	}
+	return out, nil
+}
+
+// cancelCrossOrders 撤销某结算币种下的全部全仓挂单，返回被撤销的委托 ID。
+func (s *Simulator) cancelCrossOrders(ccy string) []string {
+	var ids []string
+	for id, o := range s.pending {
+		if o.Cost.Ccy == ccy && o.Order.TdMode == types.TdCross {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		delete(s.pending, id)
+	}
+	return ids
 }

@@ -356,6 +356,15 @@ func (s *Simulator) Advance(b Bar) (StepResult, error) {
 	if err != nil {
 		return StepResult{}, err
 	}
+	// 全仓的强平是结算币种级的：同币种下的全仓仓位共担一份权益，任一合约的行情
+	// 变动都可能把整个币种推过强平线，所以本步之后必须整体再看一眼。
+	if inst, err := s.cfg.RefData.Instrument(b.InstID); err == nil {
+		cross, err := s.checkCrossLiquidation(inst.SettleCcy, b.Ts)
+		if err != nil {
+			return StepResult{}, err
+		}
+		liqs = append(liqs, cross...)
+	}
 	res.Liquidations = liqs
 	for _, l := range liqs {
 		for _, id := range l.CanceledOrders {

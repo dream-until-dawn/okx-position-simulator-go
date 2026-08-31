@@ -246,14 +246,18 @@ func (s *Simulator) PreviewFill(f Fill) (FillResult, error) {
 	}
 	res := applyFill(pos, f, inst, rate.Of(f.ExecType), s.cfg.PosMode)
 
-	// 补上保证金变化，使预演的仓位与真实成交后一致
-	md := computeMarginDelta(res, notional(inst, res.OpenedSz, f.Px), pos.Lever)
-	after := res.After
-	after.Margin = pos.Margin.Sub(md.Release).Add(md.Add)
-	if after.IsEmpty() {
-		after.Margin = decimal.Zero
+	// 补上保证金变化，使预演的仓位与真实成交后一致。
+	// 全仓的保证金不划入仓位，Margin 保持为零——这与 OKX 在全仓仓位上把 margin
+	// 字段返回为空串是一致的。
+	if mgnMode == types.MgnIsolated {
+		md := computeMarginDelta(res, inst, notional(inst, res.OpenedSz, f.Px), pos.Lever, mgnMode)
+		after := res.After
+		after.Margin = pos.Margin.Sub(md.Release).Add(md.Add)
+		if after.IsEmpty() {
+			after.Margin = decimal.Zero
+		}
+		res.After = after
 	}
-	res.After = after
 	return res, nil
 }
 

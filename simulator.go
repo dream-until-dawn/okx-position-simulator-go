@@ -232,10 +232,6 @@ func (s *Simulator) Fill(f Fill) (FillResult, error) {
 		return FillResult{}, okxerr.New(okxerr.CodeParamError,
 			"tdMode: 衍生品只支持 isolated 与 cross，实为 %q", f.TdMode)
 	}
-	if mgnMode != types.MgnIsolated {
-		return FillResult{}, okxerr.New(okxerr.CodeParamError,
-			"tdMode: 全仓模式将在 v0.3.0 支持，当前只支持 isolated")
-	}
 	side, err := s.normalizePosSide(f.PosSide)
 	if err != nil {
 		return FillResult{}, err
@@ -265,30 +261,47 @@ func (s *Simulator) Fill(f Fill) (FillResult, error) {
 	// 开仓部分的名义价值按成交价计——保证金是开仓那一刻定下的，
 	// 与随后的标记价变动无关。
 	openNotional := notional(inst, res.OpenedSz, f.Px)
-	md := computeMarginDelta(res, openNotional, pos.Lever)
+	md := computeMarginDelta(res, inst, openNotional, pos.Lever, mgnMode)
 
-	delta := res.Pnl.Add(res.Fee).Sub(md.Net())
+	// 校验与落账在全仓下必须分开。可动用资金的减少量两种模式相同，但只有逐仓
+	// 真的把保证金划出现金余额；全仓的钱留在现金里，仅被 IMR 占住。
+	need := res.Pnl.Add(res.Fee).Sub(md.Net())
+	delta := need
+	if mgnMode == types.MgnCross {
+		delta = res.Pnl.Add(res.Fee)
+	}
 
 	// 约束是可用余额而非现金余额：被其他挂单冻结的部分已有归属，不能再拿来
 	// 支撑这笔成交。该委托自身的冻结要排除在外——它正在转化为本次成交的保证金，
 	// 若把它也算作占用，一笔本该成功的成交会被自己的冻结挡下。
-	avail := s.cash[inst.SettleCcy]
-	ordMargin, ordFee := s.orderFreeze(inst.SettleCcy)
-	avail = avail.Sub(ordMargin).Sub(ordFee)
+	//
+	// 可用余额取自 Balance，逐仓与全仓的差异已在那里算清；只有逐仓持仓时它退化
+	// 为 cashBal − 挂单占用，与标定逐仓时所得的形态一致。
+	bal, err := s.Balance(inst.SettleCcy)
+	if err != nil {
+		return FillResult{}, err
+	}
+	avail := bal.AvailBal
 	if f.OrdID != "" {
 		if p, ok := s.pending[f.OrdID]; ok {
-			avail = avail.Add(p.Cost.Frozen)
+			avail = avail.Add(p.Cost.Fee)
+			if p.Order.TdMode != types.TdCross {
+				// 全仓挂单的保证金已计入 IMR，加回手续费即可；逐仓的两项都要加回。
+				avail = avail.Add(p.Cost.Margin)
+			}
 		}
 	}
-	if avail.Add(delta).IsNegative() {
-		return FillResult{}, newShortfallError(inst.SettleCcy, avail, delta.Neg(), "本次成交")
+	if avail.Add(need).IsNegative() {
+		return FillResult{}, newShortfallError(inst.SettleCcy, avail, need.Neg(), "本次成交")
 	}
 
 	after := res.After
-	after.Margin = pos.Margin.Sub(md.Release).Add(md.Add)
-	if after.IsEmpty() {
-		// 全平后保证金应当归零；比例释放的舍入残差不该留在账上
-		after.Margin = decimal.Zero
+	if mgnMode == types.MgnIsolated {
+		after.Margin = pos.Margin.Sub(md.Release).Add(md.Add)
+		if after.IsEmpty() {
+			// 全平后保证金应当归零；比例释放的舍入残差不该留在账上
+			after.Margin = decimal.Zero
+		}
 	}
 	res.After = after
 
@@ -345,11 +358,9 @@ func (s *Simulator) MetricsOf(instID string, posSide types.PosSide) (Metrics, er
 	if err != nil {
 		return Metrics{}, err
 	}
-	tbl, err := refdata.TierTableFor(s.cfg.RefData, inst, pos.MgnMode)
-	if err != nil {
-		return Metrics{}, err
-	}
-	tier, err := tbl.Lookup(pos.AbsPos())
+	// 查档口径两种模式不同：逐仓按本仓位张数，全仓按同一 (instType, instFamily)
+	// 下全部全仓持仓的张数绝对值合计。见 tierOf。
+	tier, err := s.tierOf(pos, inst)
 	if err != nil {
 		return Metrics{}, err
 	}
@@ -357,11 +368,17 @@ func (s *Simulator) MetricsOf(instID string, posSide types.PosSide) (Metrics, er
 	if err != nil {
 		return Metrics{}, err
 	}
-	markPx := s.marks[instID]
-	if markPx.IsZero() {
-		markPx = pos.AvgPx
+	m := ComputeMetrics(pos, inst, tier, s.markOf(instID, pos.AvgPx), rate.Taker)
+
+	// 全仓的权益与保证金率是结算币种级的，单个仓位算不出来。
+	if pos.MgnMode == types.MgnCross {
+		cm, err := s.CrossMetricsOf(inst.SettleCcy)
+		if err != nil {
+			return Metrics{}, err
+		}
+		m.Equity, m.MgnRatio, m.LiqPx = cm.Equity, cm.MgnRatio, cm.LiqPx
 	}
-	return ComputeMetrics(pos, inst, tier, markPx, rate.Taker), nil
+	return m, nil
 }
 
 // Balance 返回某币种的余额快照。
@@ -376,14 +393,22 @@ func (s *Simulator) Balance(ccy string) (Balance, error) {
 		if inst.SettleCcy != ccy {
 			continue
 		}
-		markPx := s.marks[p.InstID]
-		if markPx.IsZero() {
-			markPx = p.AvgPx
-		}
-		upl := unrealizedPnl(inst, p.SignedPos(), p.AvgPx, markPx)
+		upl := unrealizedPnl(inst, p.SignedPos(), p.AvgPx, s.markOf(p.InstID, p.AvgPx))
 		b.Upl = b.Upl.Add(upl)
+		if p.MgnMode == types.MgnCross {
+			// 全仓仓位不划走保证金，因此不进逐仓权益；它的浮盈直接挂在现金上。
+			b.CrossUpl = b.CrossUpl.Add(upl)
+			continue
+		}
+		b.IsoUpl = b.IsoUpl.Add(upl)
 		b.IsoEq = b.IsoEq.Add(p.Margin).Add(upl)
 	}
+
+	cm, err := s.CrossMetricsOf(ccy)
+	if err != nil {
+		return Balance{}, err
+	}
+	b.IMR, b.MMR, b.MgnRatio = cm.IMR, cm.MMR, cm.MgnRatio
 
 	// 挂单冻结经实测标定：OKX 的 ordFrozen 只是保证金部分，手续费不在其中，
 	// 但可用余额是按两者之和扣减的；frozenBal 则同时含逐仓权益与挂单冻结。
@@ -393,11 +418,14 @@ func (s *Simulator) Balance(ccy string) (Balance, error) {
 	//	              frozenBal = isoEq + 保证金 + 手续费
 	//
 	// 平仓方向的挂单不产生冻结，这一点也已实测确认。
-	ordMargin, ordFee := s.orderFreeze(ccy)
-	b.OrdFrozen = ordMargin
-	b.FrozenBal = b.IsoEq.Add(ordMargin).Add(ordFee)
-	b.Eq = b.CashBal.Add(b.IsoEq)
-	b.AvailBal = b.CashBal.Sub(ordMargin).Sub(ordFee)
+	//
+	// 全仓挂单的保证金要单独摘出来：它已经计入 IMR，再按逐仓的方式扣一次
+	// 就会把同一笔冻结重复扣掉。手续费两种模式一视同仁，都从可用余额里扣。
+	isoOrdMargin, crossOrdMargin, ordFee := s.crossOrderFreeze(ccy)
+	b.OrdFrozen = isoOrdMargin.Add(crossOrdMargin)
+	b.FrozenBal = b.IsoEq.Add(b.IMR).Add(isoOrdMargin).Add(ordFee)
+	b.Eq = b.CashBal.Add(b.IsoEq).Add(b.CrossUpl)
+	b.AvailBal = b.CashBal.Add(b.CrossUpl).Sub(b.IMR).Sub(isoOrdMargin).Sub(ordFee)
 	b.AvailEq = b.AvailBal
 	return b, nil
 }

@@ -251,15 +251,6 @@ func TestInvalidSizeRejected(t *testing.T) {
 	}
 }
 
-func TestCrossModeNotYetSupported(t *testing.T) {
-	s := newSim(t, types.NetMode)
-	f := netFill(types.Buy, "1", "78000")
-	f.TdMode = types.TdCross
-	if _, err := s.Fill(f); err == nil {
-		t.Error("全仓模式尚未支持，应当明确拒绝而不是给出错误的结果")
-	}
-}
-
 func TestSetLeverageRespectsTierCap(t *testing.T) {
 	s := newSim(t, types.NetMode)
 
