@@ -263,19 +263,39 @@ func (s *Simulator) CancelAlgoOrder(algoID string) error {
 	return nil
 }
 
+// AlgoLeg 是一条触发腿。
+//
+// 一笔算法委托可能有一条（trigger / conditional）或两条（oco）腿，移动止损则是
+// 一条会随行情移动的腿。
+//
+// 导出它是为了状态存档：**触发方向是挂单那一刻算出来的**，由触发价与当时的参考价
+// 比出来，而 AlgoOrder 里并没有那个参考价。存档只存下单参数、恢复时重新推断方向，
+// 行情已经走过去的那些委托方向就会反过来——止损变成止盈。
+type AlgoLeg struct {
+	Kind     string              `json:"kind"`   // trigger / tp / sl / move
+	Px       decimal.Decimal     `json:"px"`     // 当前触发价
+	PxType   types.TriggerPxType `json:"pxType"` // 拿哪个价来比
+	OrdPx    decimal.Decimal     `json:"ordPx"`  // 触发后的委托价，非正数即市价
+	Above    bool                `json:"above"`  // true 表示价格【涨到】该价位时触发
+	Trailing bool                `json:"trailing"`
+}
+
 // PendingAlgo 是一笔待触发的算法委托及其当前状态。
 //
 // 与 PendingOrder 同构：Order 是当初挂出去的参数，其余字段是它此刻的运行状态。
 // 移动止损的触发价会随行情走，只看 Order 是看不出来的。
 type PendingAlgo struct {
-	AlgoID string
-	Order  AlgoOrder
+	AlgoID string    `json:"algoId"`
+	Order  AlgoOrder `json:"order"`
 
-	// TriggerPx 是当前的触发价。多条腿时给第一条；移动止损的这一项会随极值棘轮。
-	TriggerPx decimal.Decimal
+	// TriggerPx 是当前的触发价，等于 Legs[0].Px，作为最常用的那一项单独给出。
+	TriggerPx decimal.Decimal `json:"triggerPx"`
 
 	// Extreme 是移动止损自挂单以来见过的极值，其余类型为零。
-	Extreme decimal.Decimal
+	Extreme decimal.Decimal `json:"extreme"`
+
+	// Legs 是全部触发腿。oco 有两条，其余一条。
+	Legs []AlgoLeg `json:"legs"`
 }
 
 // PendingAlgos 返回待触发的算法委托，instID 为空则返回全部，按 algoId 排序。
@@ -302,8 +322,14 @@ func (s *Simulator) PendingAlgoOf(algoID string) (PendingAlgo, bool) {
 
 func toPendingAlgo(id string, p pendingAlgo) PendingAlgo {
 	out := PendingAlgo{AlgoID: id, Order: p.Order, Extreme: p.Extreme}
-	if len(p.Legs) > 0 {
-		out.TriggerPx = p.Legs[0].px
+	for _, l := range p.Legs {
+		out.Legs = append(out.Legs, AlgoLeg{
+			Kind: l.kind, Px: l.px, PxType: l.pxType,
+			OrdPx: l.ordPx, Above: l.above, Trailing: l.trailing,
+		})
+	}
+	if len(out.Legs) > 0 {
+		out.TriggerPx = out.Legs[0].Px
 	}
 	return out
 }

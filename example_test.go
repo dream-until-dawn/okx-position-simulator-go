@@ -1,6 +1,7 @@
 package okxsim_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 
@@ -362,4 +363,67 @@ func ExampleSimulator_PlaceAlgoOrder() {
 	// 挂单时的触发价 74100
 	// 涨到 84000 后 79800
 	// 算法委托 ts（BTC-USDT-SWAP move_order_stop）移动止损 于 79800 触发，当场成交（开 0 张 / 平 2 张，盈亏 36）
+}
+
+// 状态存档：参数扫描的断点续跑、事件重放都要它。
+func ExampleSimulator_State() {
+	sim, err := okxsim.New(okxsim.Config{
+		PosMode:      types.NetMode,
+		RefData:      refdata.MustEmbedded(),
+		DefaultLever: d("5"),
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	sim.Deposit("USDT", d("10000"))
+	sim.Fill(okxsim.Fill{
+		InstID: "BTC-USDT-SWAP", TdMode: types.TdIsolated,
+		Side: types.Buy, PosSide: types.PosNet,
+		Sz: d("4"), Px: d("78000"), ExecType: types.Taker, Ts: 1,
+	})
+	sim.PlaceOrder(okxsim.Order{
+		OrdID: "o1", InstID: "BTC-USDT-SWAP", TdMode: types.TdIsolated,
+		Side: types.Buy, PosSide: types.PosNet, OrdType: types.OrdLimit,
+		Px: d("70000"), Sz: d("2"), Ts: 2,
+	})
+
+	// 存档：八项可变状态一次装齐，挂单与算法委托都在里面
+	blob, err := json.Marshal(sim.State())
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// 放回一个用【同样配置】构造的模拟器
+	resumed, err := okxsim.New(okxsim.Config{
+		PosMode:      types.NetMode,
+		RefData:      refdata.MustEmbedded(),
+		DefaultLever: d("5"),
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	var st okxsim.State
+	if err := json.Unmarshal(blob, &st); err != nil {
+		log.Fatal(err)
+	}
+	if err := resumed.Restore(st); err != nil {
+		log.Fatal(err)
+	}
+
+	p, _ := resumed.PositionOf("BTC-USDT-SWAP", types.PosNet)
+	b, _ := resumed.BalanceOf("USDT")
+	fmt.Printf("持仓 %s 张 @ %s，挂单 %d 笔\n",
+		p.Pos, p.AvgPx, len(resumed.PendingOrders("")))
+	fmt.Printf("现金 %s，可用 %s\n", b.CashBal, b.AvailBal)
+
+	// 配置不匹配时宁可报错，不将就着跑
+	wrong, _ := okxsim.New(okxsim.Config{
+		PosMode: types.LongShortMode, RefData: refdata.MustEmbedded(),
+	})
+	fmt.Println("放进持仓方式不同的模拟器：", wrong.Restore(st) != nil)
+
+	// Output:
+	// 持仓 4 张 @ 78000，挂单 1 笔
+	// 现金 9374.44，可用 9093.74
+	// 放进持仓方式不同的模拟器： true
 }

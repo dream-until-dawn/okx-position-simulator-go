@@ -38,6 +38,8 @@ func TestExportedAPIIsFrozen(t *testing.T) {
 		"PlaceAlgoOrder", "CancelAlgoOrder", "PendingAlgoOf", "PendingAlgos",
 		// —— 推进 ——
 		"Advance", "SettleFunding",
+		// —— 状态存档 ——
+		"State", "Restore",
 	}
 	sort.Strings(want)
 

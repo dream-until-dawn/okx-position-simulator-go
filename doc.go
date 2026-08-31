@@ -44,6 +44,21 @@
 //
 // 返回标量的访问器不带 Of（MarkPx、CashBal、Leverage）。
 //
+// # 状态存档
+//
+// State 导出全部可变状态，Restore 原样放回——参数扫描的断点续跑、事件重放、
+// 把中途状态存下来事后复盘都要它：
+//
+//	blob, _ := json.Marshal(sim.State())
+//	// …
+//	var st okxsim.State
+//	json.Unmarshal(blob, &st)
+//	resumed.Restore(st)   // 须是用同样配置构造的模拟器
+//
+// 完整性是它存在的理由：手写搬运最容易漏掉挂单与算法委托，而漏了不会报错，
+// 只会让续跑时凭空少几笔在途委托。持仓方式或规则数据版本不匹配时 Restore 会
+// 直接报错，而不是将就着跑。
+//
 // # 值的表示
 //
 // 一切金额与价格用 github.com/shopspring/decimal，不用 float64——OKX 的 avgPx
