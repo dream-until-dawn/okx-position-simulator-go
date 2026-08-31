@@ -135,8 +135,16 @@ go run ./cmd/refdata-sync -top 100 -out my-snapshot.json.gz
 （BTC-USDT 档位区间相差 10 倍）。内置快照取自生产环境，仅供回测；
 对拍模拟盘须用 `live.WithSimulated(true)` 从同一环境取数据。
 
-**验收标准可自动化。**「100% 模拟」被定义为：输出结构体与 OKX REST 响应字段级同构、
-错误码与 OKX 对齐、模拟盘真实下单逐字段 diff。否则它只是一句口号。
+**验收标准可自动化。**「100% 模拟」若不能被自动验证，就只是一句口号。
+`cmd/conformance` 是那个验证：在模拟盘上真实下单，把同一批成交灌进模拟器，
+逐字段比对仓位与账户。当前 66 个字段全部一致，差值在 `1e-15 ~ 1e-11`（decimal 精度残差）。
+
+```
+cd cmd/conformance && go run . -inst BTC-USDT-SWAP -lever 5
+```
+
+它是独立的嵌套模块：需要 OKX SDK 才能发起已签名请求，而主模块要保持
+「依赖树只有 decimal 一个」。代价是根目录的 `go build ./...` 不含它，需单独进入执行。
 
 ## 文档
 
