@@ -5,9 +5,10 @@
 //
 // 所用接口全部免鉴权：
 //
-//	GET /api/v5/public/instruments      合约规格
-//	GET /api/v5/public/position-tiers   档位表
-//	GET /api/v5/market/tickers          行情（仅用于挑选要收录的品种）
+//	GET /api/v5/public/instruments           合约规格
+//	GET /api/v5/public/position-tiers        档位表
+//	GET /api/v5/market/tickers               行情（仅用于挑选要收录的品种）
+//	GET /api/v5/public/funding-rate-history  历史资金费率
 //
 // 费率不在此列：/api/v5/account/trade-fee 需要鉴权且返回的是「当前账户」的费率，
 // 无法作为公共规则拉取。费率请用 refdata.DefaultFeeSchedule 或 FeeSchedule.WithRate。
@@ -20,6 +21,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/dream-until-dawn/okx-position-simulator-go/refdata"
@@ -237,6 +239,80 @@ func (f *Fetcher) Turnover24h(ctx context.Context, instType types.InstType) (map
 			continue
 		}
 		out[t.InstID] = vol.Mul(last)
+	}
+	return out, nil
+}
+
+// FundingRate 是一次资金费结算的历史记录。
+type FundingRate struct {
+	InstID       string
+	FundingTime  int64           // 结算时刻（毫秒）
+	FundingRate  decimal.Decimal // 预告费率
+	RealizedRate decimal.Decimal // 实际结算费率，回测应当用这个
+}
+
+// FundingRateHistory 拉取历史资金费率，按结算时刻从新到旧返回。
+//
+// ⚠️ 回溯窗口只有约 3 个月。实测翻到底：BTC-USDT-SWAP / ETH-USDT-SWAP /
+// DOGE-USDT-SWAP / BTC-USD-SWAP 四者全部截止在同一天，距今 97 天，各约 294 条
+// ——这是平台级的硬窗口，不是个别合约的问题。超出该窗口取不到真实费率，
+// 长周期回测须另寻数据源或改用近似。
+//
+// before 与 after 是分页游标（毫秒时间戳），传 0 表示不限；limit 最大 100。
+// 翻页时把上一页最后一条的 FundingTime 作为 after 传入。
+func (f *Fetcher) FundingRateHistory(ctx context.Context, instID string,
+	before, after int64, limit int) ([]FundingRate, error) {
+
+	q := url.Values{"instId": {instID}}
+	if before > 0 {
+		q.Set("before", strconv.FormatInt(before, 10))
+	}
+	if after > 0 {
+		q.Set("after", strconv.FormatInt(after, 10))
+	}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	body, err := f.get(ctx, "/api/v5/public/funding-rate-history", q)
+	if err != nil {
+		return nil, err
+	}
+
+	type rawRate struct {
+		InstID       string `json:"instId"`
+		FundingTime  string `json:"fundingTime"`
+		FundingRate  string `json:"fundingRate"`
+		RealizedRate string `json:"realizedRate"`
+	}
+	var env struct {
+		Code string    `json:"code"`
+		Msg  string    `json:"msg"`
+		Data []rawRate `json:"data"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		return nil, fmt.Errorf("解析历史资金费率失败: %w", err)
+	}
+	if env.Code != refdata.CodeOK {
+		return nil, fmt.Errorf("拉取历史资金费率失败: OKX %s: %s", env.Code, env.Msg)
+	}
+
+	out := make([]FundingRate, 0, len(env.Data))
+	for _, r := range env.Data {
+		ts, err := strconv.ParseInt(r.FundingTime, 10, 64)
+		if err != nil {
+			continue
+		}
+		fr := FundingRate{InstID: r.InstID, FundingTime: ts}
+		if v, err := decimal.NewFromString(r.FundingRate); err == nil {
+			fr.FundingRate = v
+		}
+		// realizedRate 是实际结算所用的费率；个别历史记录可能缺失，回落到预告费率
+		if v, err := decimal.NewFromString(r.RealizedRate); err == nil {
+			fr.RealizedRate = v
+		} else {
+			fr.RealizedRate = fr.FundingRate
+		}
+		out = append(out, fr)
 	}
 	return out, nil
 }

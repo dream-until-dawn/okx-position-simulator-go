@@ -1,6 +1,7 @@
 package okxsim
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/dream-until-dawn/okx-position-simulator-go/okxerr"
@@ -51,6 +52,17 @@ type Bar struct {
 	Last   decimal.Decimal
 	MarkPx decimal.Decimal
 	Ts     int64
+
+	// Funding 非空时在本步结算一次资金费。
+	//
+	// 留空即【不计资金费】，等价于零费率。这是默认行为，也是绝大多数长周期
+	// 回测的实际状态——OKX 的历史资金费率只保留约 3 个月，超出窗口就取不到
+	// 真实费率。不计资金费会系统性高估多头持仓的收益，用之前请知悉。
+	//
+	// 结算发生在撮合【之前】，作用于带入本步的仓位。理由是资金费的结算时刻
+	// 落在整点，也就是一根 K 线的起点；若放在撮合之后，本步内新开的仓位会被
+	// 收取一笔它并未持有过的资金费。
+	Funding *Funding
 }
 
 func (b Bar) markPx() decimal.Decimal {
@@ -66,13 +78,36 @@ type PlaceResult struct {
 	State types.OrdState
 	Cost  OrderCost    // 挂住时的冻结明细；立即成交时为零值
 	Fills []FillResult // 立即成交产生的结果
+
+	// Reason 在 State 为 canceled 时说明原因。
+	//
+	// 只挂单委托会立即成交而被撤，与立即成交类委托无法成交而被撤，
+	// 两者的状态都是 canceled，但含义截然不同——前者是价格挂得太激进，
+	// 后者是价格挂得够不着。不区分开，使用者只能去猜。
+	Reason CancelReason
+	Detail string
+}
+
+// Canceled 报告该委托是否被撤销，并给出原因。
+func (r PlaceResult) Canceled() (CancelReason, bool) {
+	if r.State == types.OrdCanceled {
+		return r.Reason, true
+	}
+	return "", false
 }
 
 // StepResult 是推进一步行情的结果。
 type StepResult struct {
-	Ts       int64
-	Fills    []FillResult
-	Canceled []string // 本步被撤销的委托，如触发了只挂单限制
+	Ts           int64
+	Fundings     []FundingResult
+	Fills        []FillResult
+	Liquidations []Liquidation
+
+	// Canceled 是本步被撤销的委托及其原因。
+	//
+	// 只给委托 ID 是不够的：委托可能因资金不足以承接成交而撤，也可能因强平
+	// 前清场而撤，两者对策略的含义完全不同。
+	Canceled []Cancellation
 }
 
 // LastPx 返回某合约当前的最新成交价；未推进过行情则返回零值。
@@ -165,7 +200,11 @@ func (s *Simulator) PlaceOrder(o Order) (PlaceResult, error) {
 	switch {
 	case canFill && o.OrdType.IsPostOnly():
 		// 只挂单委托若会立即成交，OKX 直接撤销而不成交
-		return PlaceResult{OrdID: o.OrdID, State: types.OrdCanceled}, nil
+		return PlaceResult{
+			OrdID: o.OrdID, State: types.OrdCanceled,
+			Reason: CancelPostOnlyWouldTake,
+			Detail: fmt.Sprintf("委托价 %s 相对最新价 %s 已可成交", o.Px, last),
+		}, nil
 
 	case canFill:
 		fr, err := s.fillOrder(o, fillPx, types.Taker, o.Ts)
@@ -177,7 +216,14 @@ func (s *Simulator) PlaceOrder(o Order) (PlaceResult, error) {
 
 	case o.OrdType.IsImmediate():
 		// 立即成交类委托无法成交时直接撤销，不挂入簿中
-		return PlaceResult{OrdID: o.OrdID, State: types.OrdCanceled}, nil
+		detail := fmt.Sprintf("委托价 %s 相对最新价 %s 无法成交", o.Px, last)
+		if !last.IsPositive() {
+			detail = "尚无最新价，无从判断能否成交——请先经 Advance 推进行情或调用 SetLast"
+		}
+		return PlaceResult{
+			OrdID: o.OrdID, State: types.OrdCanceled,
+			Reason: CancelImmediateUnfilled, Detail: detail,
+		}, nil
 	}
 
 	cost, err := s.freezeOrder(o)
@@ -218,8 +264,7 @@ func (s *Simulator) freezeOrder(o Order) (OrderCost, error) {
 		return OrderCost{}, err
 	}
 	if !cost.Affordable(bal.AvailBal) {
-		return OrderCost{}, okxerr.New(okxerr.CodeInsufficientBal,
-			"%s 可用余额 %s 不足以挂出该委托（需冻结 %s）", cost.Ccy, bal.AvailBal, cost.Frozen)
+		return OrderCost{}, newShortfallError(cost.Ccy, bal.AvailBal, cost.Frozen, "挂出该委托")
 	}
 	s.pending[o.OrdID] = PendingOrder{OrdID: o.OrdID, Req: req, Cost: cost, Order: o}
 	return cost, nil
@@ -247,8 +292,9 @@ func (s *Simulator) fillOrder(o Order, px decimal.Decimal,
 // 同一步内多笔可成交时按下单先后处理，与真实的时间优先一致；同一时刻下的
 // 委托按委托 ID 排序，使结果可复现。
 //
-// 资金费结算与强平检查将在后续版本并入本方法——它们同样由时钟驱动，
-// 放在一处才能保证顺序确定。
+// 一步之内的执行顺序是确定的：资金费结算 -> 撮合 -> 强平检查。
+// 强平排在最后，因为它要看的是本步全部变动落定后的风险状况：资金费扣过了、
+// 该成交的成交了，此刻的保证金率才是真实的。
 func (s *Simulator) Advance(b Bar) (StepResult, error) {
 	if b.InstID == "" {
 		return StepResult{}, okxerr.New(okxerr.CodeParamEmpty, "instId 不能为空")
@@ -274,15 +320,59 @@ func (s *Simulator) Advance(b Bar) (StepResult, error) {
 	}
 
 	res := StepResult{Ts: b.Ts}
+
+	// 资金费先于撮合结算，作用于带入本步的仓位——结算时刻落在整点，
+	// 即一根 K 线的起点；放在撮合之后会让本步新开的仓位被收一笔它并未持有过的费。
+	if b.Funding != nil {
+		fr, err := s.settleFunding(b.InstID, *b.Funding, b.markPx(), b.Ts)
+		if err != nil {
+			return StepResult{}, err
+		}
+		res.Fundings = fr
+	}
+
 	for _, o := range s.triggeredOrders(b) {
 		fr, err := s.fillOrder(o, o.Px, types.Maker, b.Ts)
 		if err != nil {
-			// 余额不足以承接这笔成交时撤销该委托，与真实撮合中的资金校验一致
+			// 余额不足以承接这笔成交时撤销该委托，与真实撮合中的资金校验一致。
+			// 把原因一并带出——不然使用者只会看到委托凭空消失。
 			delete(s.pending, o.OrdID)
-			res.Canceled = append(res.Canceled, o.OrdID)
+			c := Cancellation{
+				OrdID: o.OrdID, InstID: o.InstID,
+				Reason: CancelInsufficientFunds, Detail: err.Error(),
+			}
+			if sf, ok := ShortfallOf(err); ok {
+				c.Detail = sf.String()
+			}
+			res.Canceled = append(res.Canceled, c)
 			continue
 		}
 		res.Fills = append(res.Fills, fr)
+	}
+
+	// 强平检查排在最后：它要看的是本步全部变动落定后的风险状况——
+	// 资金费扣过了、该成交的成交了，此刻的保证金率才是真实的。
+	liqs, err := s.checkLiquidation(b.InstID, b.Ts)
+	if err != nil {
+		return StepResult{}, err
+	}
+	// 全仓的强平是结算币种级的：同币种下的全仓仓位共担一份权益，任一合约的行情
+	// 变动都可能把整个币种推过强平线，所以本步之后必须整体再看一眼。
+	if inst, err := s.cfg.RefData.Instrument(b.InstID); err == nil {
+		cross, err := s.checkCrossLiquidation(inst.SettleCcy, b.Ts)
+		if err != nil {
+			return StepResult{}, err
+		}
+		liqs = append(liqs, cross...)
+	}
+	res.Liquidations = liqs
+	for _, l := range liqs {
+		for _, id := range l.CanceledOrders {
+			res.Canceled = append(res.Canceled, Cancellation{
+				OrdID: id, InstID: l.InstID, Reason: CancelLiquidation,
+				Detail: fmt.Sprintf("%s %s 触发强平", l.InstID, l.PosSide),
+			})
+		}
 	}
 	return res, nil
 }

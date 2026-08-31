@@ -187,9 +187,10 @@ func TestPositionViewEmptyMeansNoValue(t *testing.T) {
 	if v.PosCcy != "" {
 		t.Errorf("正向合约的 posCcy = %q，应为空串", v.PosCcy)
 	}
-	// 模拟器拿不到的字段一律留空
+	// 模拟器拿不到的字段一律留空。
+	// bePx 曾在此列，v0.5.0 起可算——公式已由真实仓位标定，见 breakEvenPx。
 	for name, val := range map[string]string{
-		"posId": v.PosID, "idxPx": v.IdxPx, "last": v.Last, "bePx": v.BePx,
+		"posId": v.PosID, "idxPx": v.IdxPx, "last": v.Last,
 		"adl": v.Adl, "usdPx": v.UsdPx, "tradeId": v.TradeID,
 	} {
 		if val != "" {
@@ -198,7 +199,7 @@ func TestPositionViewEmptyMeansNoValue(t *testing.T) {
 	}
 
 	// 能算的字段必须有值
-	if v.Margin == "" || v.AvgPx == "" || v.Pos == "" || v.Lever == "" {
+	if v.Margin == "" || v.AvgPx == "" || v.Pos == "" || v.Lever == "" || v.BePx == "" {
 		t.Errorf("可计算的字段不应为空: %+v", v)
 	}
 }
@@ -285,5 +286,58 @@ func TestInverseViewHasPosCcy(t *testing.T) {
 	}
 	if views[0].Ccy != "BTC" {
 		t.Errorf("反向合约的保证金币种 = %q，期望 BTC", views[0].Ccy)
+	}
+}
+
+// TestCrossPositionViewFieldShape 锁定全仓仓位视图的字段形态。
+//
+// margin 与 imr 恰好互补：逐仓给 margin、imr 空，全仓给 imr、margin 空。
+// 这不是设计取舍，是照 OKX 的实际返回抄的——字段级同构是本项目的验收标准之一。
+func TestCrossPositionViewFieldShape(t *testing.T) {
+	fx := loadCrossFixture(t)
+	s, err := New(Config{PosMode: types.LongShortMode, RefData: crossSnapshot(t, fx)})
+	if err != nil {
+		t.Fatalf("新建模拟器失败: %v", err)
+	}
+	if err := s.Deposit("USDT", dec("10000")); err != nil {
+		t.Fatalf("入金失败: %v", err)
+	}
+	if err := s.SetPosition(Position{
+		InstID: "ETH-USDT-SWAP", MgnMode: types.MgnCross, PosSide: types.PosLong,
+		Pos: dec("2"), AvgPx: dec("2445.6"), Lever: dec("10"),
+	}); err != nil {
+		t.Fatalf("置入仓位失败: %v", err)
+	}
+	s.SetMark("ETH-USDT-SWAP", dec("2445.25"))
+
+	views, err := s.PositionViews()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := views[0]
+	if v.Margin != "" {
+		t.Errorf("全仓的 margin = %q，应为空串——那笔钱从未离开现金余额", v.Margin)
+	}
+	if v.Imr == "" {
+		t.Error("全仓的 imr 应有值")
+	}
+	if v.MgnMode != "cross" {
+		t.Errorf("mgnMode = %q", v.MgnMode)
+	}
+	// 现金远厚于仓位，强平价够不着，OKX 此时返回空串
+	if v.LiqPx != "" {
+		t.Errorf("强平价够不着时应为空串，实为 %q", v.LiqPx)
+	}
+
+	bvs, err := s.BalanceViews()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := bvs[0]
+	if b.Imr == "" || b.Mmr == "" || b.MgnRatio == "" {
+		t.Errorf("有全仓持仓时币种级的 imr/mmr/mgnRatio 都应有值: %+v", b)
+	}
+	if b.IsoEq != "0" {
+		t.Errorf("没有逐仓持仓时 isoEq = %q，应为 0", b.IsoEq)
 	}
 }

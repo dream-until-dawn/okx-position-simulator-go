@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/dream-until-dawn/okx-position-simulator-go/refdata"
+	"github.com/dream-until-dawn/okx-position-simulator-go/types"
 	"github.com/shopspring/decimal"
 )
 
@@ -19,8 +20,8 @@ import (
 //
 // 模拟器拿不到的字段一律留空，与 OKX 表示「无此值」的方式一致。当前留空的有：
 // posId、idxPx、last、bePx、uplLastPx、uplRatioLastPx、adl、usdPx、
-// liqPenalty、notionalUsd、tradeId——它们需要指数价、最新成交价、全市场减仓
-// 排名等模拟器职责之外的数据。
+// notionalUsd、tradeId——它们需要指数价、最新成交价、全市场减仓排名等
+// 模拟器职责之外的数据。
 
 // numStr 把数值按 OKX 的线格式输出；zeroEmpty 为真时零值输出空串。
 func numStr(d decimal.Decimal, zeroEmpty bool) string {
@@ -77,29 +78,37 @@ type PositionView struct {
 // newPositionView 由仓位与其风险指标装配 OKX 形态的视图。
 func newPositionView(p Position, inst refdata.Instrument, m Metrics) PositionView {
 	v := PositionView{
-		InstType:    inst.InstType.String(),
-		InstID:      p.InstID,
-		PosSide:     p.PosSide.String(),
-		MgnMode:     p.MgnMode.String(),
-		Pos:         p.Pos.String(),
-		AvailPos:    p.Pos.String(),
-		Ccy:         inst.SettleCcy,
-		AvgPx:       p.AvgPx.String(),
-		Lever:       p.Lever.String(),
-		Margin:      p.Margin.String(),
-		RealizedPnl: p.RealizedPnl.String(),
+		InstType: inst.InstType.String(),
+		InstID:   p.InstID,
+		PosSide:  p.PosSide.String(),
+		MgnMode:  p.MgnMode.String(),
+		Pos:      p.Pos.String(),
+		AvailPos: p.Pos.String(),
+		Ccy:      inst.SettleCcy,
+		AvgPx:    p.AvgPx.String(),
+		Lever:    p.Lever.String(),
+		// OKX 的 realizedPnl 是净额，不是毛盈亏
+		RealizedPnl: p.NetRealizedPnl().String(),
 		Fee:         p.Fee.String(),
 		FundingFee:  p.Funding.String(),
 		CTime:       millisStr(p.CTime),
 		UTime:       millisStr(p.UTime),
 	}
-	// 逐仓的 imr 恒为空串，保证金看 margin —— 与 OKX 一致。
+	// margin 与 imr 恰好互补，实测确认：逐仓给 margin、imr 为空串（保证金已划入
+	// 仓位，看 margin 即可）；全仓给 imr、margin 为空串（那笔钱从未离开现金余额）。
+	if p.MgnMode == types.MgnCross {
+		v.Imr = numStr(m.IMR, true)
+	} else {
+		v.Margin = p.Margin.String()
+	}
 	// 反向合约的 posCcy 是标的币；正向合约恒为空。
 	if inst.IsInverse() {
 		v.PosCcy = inst.CtValCcy
 	}
 
+	v.LiqPenalty = numStr(p.LiqPenalty, true)
 	v.MarkPx = numStr(m.MarkPx, true)
+	v.BePx = numStr(m.BePx, true)
 	v.LiqPx = numStr(m.LiqPx, true)
 	v.MgnRatio = numStr(m.MgnRatio, true)
 	v.Mmr = numStr(m.MMR, true)
@@ -120,6 +129,9 @@ type BalanceView struct {
 	IsoEq     string `json:"isoEq"`
 	IsoUpl    string `json:"isoUpl"`
 	Upl       string `json:"upl"`
+	Imr       string `json:"imr"`
+	Mmr       string `json:"mmr"`
+	MgnRatio  string `json:"mgnRatio"`
 	DisEq     string `json:"disEq"`
 }
 
@@ -133,8 +145,12 @@ func newBalanceView(b Balance) BalanceView {
 		FrozenBal: b.FrozenBal.String(),
 		OrdFrozen: b.OrdFrozen.String(),
 		IsoEq:     b.IsoEq.String(),
-		IsoUpl:    b.Upl.String(),
+		IsoUpl:    b.IsoUpl.String(),
 		Upl:       b.Upl.String(),
+		// 这三项只在有全仓持仓时才有值——实测只有逐仓时 OKX 一律返回空串
+		Imr:      numStr(b.IMR, true),
+		Mmr:      numStr(b.MMR, true),
+		MgnRatio: numStr(b.MgnRatio, true),
 	}
 }
 

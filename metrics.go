@@ -2,6 +2,7 @@ package okxsim
 
 import (
 	"github.com/dream-until-dawn/okx-position-simulator-go/refdata"
+	"github.com/dream-until-dawn/okx-position-simulator-go/types"
 	"github.com/shopspring/decimal"
 )
 
@@ -22,11 +23,18 @@ type Metrics struct {
 	MMR      decimal.Decimal // 维持保证金（金额）
 	MMRRate  decimal.Decimal // 维持保证金率（来自档位表）
 	CloseFee decimal.Decimal // 平仓手续费（正数），参与保证金率的分母
-	Equity   decimal.Decimal // 逐仓权益 = margin + upl
-	MgnRatio decimal.Decimal // 保证金率，≤ 1 触发强平
+	Equity   decimal.Decimal // 权益：逐仓为 margin + upl，全仓为所属结算币种的全仓权益
+	MgnRatio decimal.Decimal // 保证金率，≤ 1 触发强平；全仓取所属结算币种的整体值
 	LiqPx    decimal.Decimal // 预估强平价（仅逐仓、仅正向合约）
 	BkPx     decimal.Decimal // 破产价（仅逐仓、仅正向合约）
+	BePx     decimal.Decimal // 盈亏平衡价，对应 OKX 的 bePx
 	Tier     int             // 所处档位
+
+	// HasPosition 报告这组指标是否来自一个真实存在的仓位。
+	//
+	// 不能拿 MgnRatio 是否为零来代替它：权益被亏损或资金费耗尽时保证金率同样是
+	// 零，而那恰恰是最该强平的时刻。二者混为一谈会让爆到穿仓的仓位反而爆不掉。
+	HasPosition bool
 }
 
 // ComputeMetrics 计算逐仓仓位在给定标记价下的风险指标。
@@ -42,6 +50,7 @@ func ComputeMetrics(pos Position, inst refdata.Instrument, tier refdata.Position
 	if pos.IsEmpty() || markPx.IsZero() {
 		return m
 	}
+	m.HasPosition = true
 
 	taker := takerRate.Abs()
 	signed := pos.SignedPos()
@@ -64,6 +73,17 @@ func ComputeMetrics(pos Position, inst refdata.Instrument, tier refdata.Position
 	m.MMR = m.Notional.Mul(tier.MMR)
 	m.CloseFee = m.Notional.Mul(taker)
 
+	if !inst.IsInverse() {
+		m.BePx = breakEvenPx(long, pos.AvgPx, taker)
+	}
+
+	// 以下三项在全仓下是【结算币种级】的，不属于单个仓位，此处留零，由
+	// Simulator.MetricsOf 从 CrossMetricsOf 填入。OKX 的做法与之呼应：全仓仓位的
+	// margin 与 liqPx 一律返回空串，而 mgnRatio 返回的正是币种级的那个值。
+	if pos.MgnMode == types.MgnCross {
+		return m
+	}
+
 	// 逐仓权益 = 划入的保证金 + 未实现盈亏
 	m.Equity = pos.Margin.Add(m.UPL)
 
@@ -78,6 +98,27 @@ func ComputeMetrics(pos Position, inst refdata.Instrument, tier refdata.Position
 		m.BkPx = bankruptcyPx(long, pos.AvgPx, m.Qty, pos.Margin)
 	}
 	return m
+}
+
+// breakEvenPx 计算盈亏平衡价，即平仓后不赚不亏所需的价格。
+//
+// 由「价差恰好抵掉开仓与平仓两笔手续费」解出：
+//
+//	多头  avgPx × (1 + taker) / (1 − taker)
+//	空头  avgPx × (1 − taker) / (1 + taker)
+//
+// 平仓那笔手续费按平仓价收取，所以未知数在等式两侧都出现，不能简单地写成
+// avgPx × (1 + 2×taker)。实测样本：avgPx 2445.6、taker 0.0005，本式给出
+// 2448.0468234117056，与 OKX 的 bePx 逐位相同；而近似式给出 2448.0456，差 1.2。
+//
+// 手续费一律按吃单费率计——挂单成交实际收的是挂单费率，但 OKX 的 bePx 不区分
+// 成交角色。反向合约暂不计算。
+func breakEvenPx(long bool, avgPx, taker decimal.Decimal) decimal.Decimal {
+	one := decimal.NewFromInt(1)
+	if long {
+		return div(avgPx.Mul(one.Add(taker)), one.Sub(taker))
+	}
+	return div(avgPx.Mul(one.Sub(taker)), one.Add(taker))
 }
 
 // unrealizedPnl 计算未实现盈亏。用标记价而非最新成交价，与 OKX 一致。
@@ -149,10 +190,14 @@ func bankruptcyPx(long bool, avgPx, qty, margin decimal.Decimal) decimal.Decimal
 	return avgPx.Add(d)
 }
 
-// IsLiquidatable 报告该保证金率是否已触及强平线。
+// IsLiquidatable 报告该仓位是否已触及强平线。
 //
 // OKX 的口径是保证金率 ≤ 100%，而 mgnRatio 字段以倍数表示（1 即 100%）。
 // 实测一个健康的五倍杠杆浮盈仓位其 mgnRatio 为 89.03，即 8903%。
+//
+// 判据里必须带上 HasPosition：保证金率为零既可能是「没有仓位」，也可能是
+// 「权益已被耗尽」，后者恰恰最该强平。早先只用 MgnRatio 非零来排除空仓，
+// 结果是被资金费耗穿的仓位反而爆不掉。
 func (m Metrics) IsLiquidatable() bool {
-	return !m.MgnRatio.IsZero() && m.MgnRatio.LessThanOrEqual(decimal.NewFromInt(1))
+	return m.HasPosition && m.MgnRatio.LessThanOrEqual(decimal.NewFromInt(1))
 }

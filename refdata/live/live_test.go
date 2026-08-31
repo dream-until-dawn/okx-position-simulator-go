@@ -551,3 +551,41 @@ func TestWithSimulatedSetsHeader(t *testing.T) {
 		t.Errorf("生产请求不应带 x-simulated-trading，实际 %v", got)
 	}
 }
+
+// TestFundingRateHistory 历史资金费率的解析，含 realizedRate 缺失时回落到预告费率。
+//
+// 模拟器不产生费率——那是市场结果，回测不该预测它。但历史费率可得，
+// 因此历史区间的资金费能算准；这个拉取器就是把「可得」变成「好用」。
+func TestFundingRateHistory(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("after"); got != "1788000000000" {
+			t.Errorf("after 参数 = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"code":"0","msg":"","data":[
+			{"instId":"BTC-USDT-SWAP","fundingTime":"1788134400000",
+			 "fundingRate":"0.0001","realizedRate":"0.0000646500235042"},
+			{"instId":"BTC-USDT-SWAP","fundingTime":"1788105600000",
+			 "fundingRate":"0.00008","realizedRate":""}]}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	f := NewFetcher(WithBaseURL(srv.URL), WithMinInterval(0))
+	rs, err := f.FundingRateHistory(context.Background(), "BTC-USDT-SWAP", 0, 1788000000000, 100)
+	if err != nil {
+		t.Fatalf("拉取历史资金费率失败: %v", err)
+	}
+	if len(rs) != 2 {
+		t.Fatalf("条数 = %d", len(rs))
+	}
+	if rs[0].FundingTime != 1788134400000 {
+		t.Errorf("结算时刻 = %d", rs[0].FundingTime)
+	}
+	if rs[0].RealizedRate.String() != "0.0000646500235042" {
+		t.Errorf("实际结算费率 = %s", rs[0].RealizedRate)
+	}
+	// realizedRate 缺失时回落到预告费率，而不是留成零——零会让那一期的资金费凭空消失
+	if rs[1].RealizedRate.String() != "0.00008" {
+		t.Errorf("缺失 realizedRate 时应回落到预告费率，实际 %s", rs[1].RealizedRate)
+	}
+}

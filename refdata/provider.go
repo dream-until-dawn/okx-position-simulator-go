@@ -27,8 +27,9 @@ type Provider interface {
 
 	// TierTable 返回档位表；不存在时返回包装了 ErrTierTableNotFound 的错误。
 	//
-	// 键中的 Family 是 instFamily 而非 instId：全仓模式下同一 instFamily 的
-	// 多个合约持仓必须合并后再查档。
+	// 键中的 Family 是 instFamily 而非 instId：全仓模式下同一 instFamily、
+	// 同一 instType 的多个合约持仓必须合并后再查档。永续与交割不共用一张表，
+	// 键里的 InstType 正是为此，详见 TierKey。
 	TierTable(key TierKey) (*TierTable, error)
 
 	// FeeSchedule 返回费率表。

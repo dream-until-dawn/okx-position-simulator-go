@@ -50,53 +50,78 @@
 模块路径 `github.com/dream-until-dawn/okx-position-simulator-go`，根包名 `okxsim`，`go 1.22`。
 
 ```
-/                    package okxsim   核心：账户·仓位·保证金·强平·资金费·费率·事件
-  ├─ types/          枚举与值类型 (InstType/TdMode/PosSide/Side/OrdType/MgnMode/...)
-  ├─ refdata/        Provider 接口 + 数据模型 + go:embed 快照 + 查档逻辑
-  │    └─ live/      ← 独立子包：从 OKX 公共 API 拉取最新参考数据
-  ├─ matching/       ← 独立子包：可选简易撮合器
-  ├─ internal/       内部工具
-  └─ cmd/conformance/  ← 独立对拍工具（不属于库的公开 API）
+/                      package okxsim  —— 核算内核
+  position.go            仓位状态机：开平加减仓、反手、均价、已实现盈亏
+  metrics.go             风险指标：uPL / IMR / MMR / 保证金率 / 强平价 / 破产价
+  account.go             币种余额与保证金流转
+  cross.go               全仓：合并查档、币种级权益与保证金率、全仓强平价
+  simulator.go           门面：出入金、杠杆、行情、成交、查询、按状态恢复
+  matching.go            内置撮合：委托、行情推进、成交角色判定
+  pretrade.go            预下单计算：冻结额、可开张数、成交预演
+  funding.go             资金费结算
+  liquidation.go         强平：逐仓仓位级、全仓结算币种级
+  reason.go              对外说明：撤单原因、资金缺口、事件摘要
+  view.go                与 OKX 响应字段级同构的视图
+
+  types/               枚举与值类型，取值与 OKX 线格式一致
+  okxerr/              与 OKX 错误码对齐的错误类型
+  refdata/             合约规格、档位表、费率表、Provider 抽象、内置快照
+    live/              ← 独立子包：从 OKX 公共接口拉取，含定期刷新与变更检测
+  cmd/refdata-sync/    生成内置快照
+  cmd/conformance/     ← 独立嵌套模块：与模拟盘逐字段对拍
 ```
 
 **硬性约束：核心包的依赖树只有 `shopspring/decimal` 一个。**
-`refdata/live`（引入 `net/http`）、`matching`、`cmd/conformance`（引入 OKX SDK）全部隔离在子包中。
-别人把它塞进回测引擎时，不会被迫带进一堆传递依赖 —— 这是"外部可引入性"最实在的一条。
 
-## 4. API 形态草案
-
-```go
-sim := okxsim.New(okxsim.Config{
-    AcctLv:  types.SpotAndFutures,   // acctLv = 2
-    PosMode: types.NetMode,          // 或 LongShortMode
-    FeeTier: fee.Lv1,
-    RefData: refdata.Embedded(),     // 或 live.Fetch(ctx)
-})
-
-sim.Deposit("USDT", d("10000"))
-
-// 1) 更新行情（只更新，不触发任何风控）
-sim.SetMark("BTC-USDT-SWAP", d("77657.4"))
-
-// 2) 灌入成交（撮合由外部负责）
-_, err := sim.Fill(okxsim.Fill{
-    InstID: "BTC-USDT-SWAP", Side: types.Buy, TdMode: types.Isolated,
-    Sz: d("10"), Px: d("77650"), Role: types.Taker, Ts: ts,
-})
-
-// 3) 推进时钟：资金费结算 → 风控检查 → 强平，返回事件
-events := sim.Advance(ts)
-
-// 4) 查询（结构体与 OKX REST 响应字段级同构）
-pos := sim.Positions()   // ≅ GET /api/v5/account/positions
-bal := sim.Balance()     // ≅ GET /api/v5/account/balance
-```
-
-`Advance` 内部的执行顺序是确定的，且这个顺序本身就是需要与真实行为对齐的一部分：
+`refdata/live` 引入 `net/http`，故独立成子包；`cmd/conformance` 需要 OKX SDK，
+故做成**嵌套模块**（自带 `go.mod`）——若把 SDK 写进主模块，即便使用者从不引用
+该工具，依赖仍会出现在他们的模块图里。已验证隔离生效：
 
 ```
-资金费结算 → 重算权益/uPL → 计算 mgnRatio → 若 ≤100%：撤单 → 阶梯减仓 → 全平 → 穿仓
+主模块      github.com/shopspring/decimal
+对拍工具    okx-api-v5-go + gorilla/websocket（完全隔离）
 ```
+
+代价是根目录的 `go build ./...` 不含 `cmd/conformance`，需单独进入执行。
+
+## 4. API 形态
+
+完整用法见 [README](../README.md) 与 godoc，此处只记录**形态上的取舍**。
+
+### 时钟驱动
+
+```
+Advance(bar) 一步之内的执行顺序是确定的：
+
+  资金费结算  →  撮合  →  强平检查
+```
+
+- **资金费先于撮合**：结算时刻落在整点即一根 K 线的起点，放在撮合之后会让本步
+  新开的仓位被收一笔它并未持有过的费
+- **强平最后**：它要看的是本步全部变动落定后的风险状况
+
+`SetMark` 只更新价格、不触发任何风控，这样多个合约在同一时刻的更新顺序就不会
+影响结果。
+
+### 两条并存的路径
+
+内置撮合不是强制的。引擎若有自己的撮合逻辑，可直接灌 `Fill`，在其中带上
+`OrdID` 即可让模拟器代为解除该委托的冻结。内置撮合必然要做假设
+（K 线驱动、无盘口深度、全成或不成），有自己撮合逻辑的引擎不该被绑架。
+
+### 状态即纯数据
+
+仓位与余额不含任何隐藏状态，因此可以整体存下、再经 `SetPosition` 整体放回。
+回测引擎做参数扫描、断点续跑或事件重放时需要它；对拍工具搬运真实仓位时也需要
+——按均价重放一笔成交只能复现持仓与保证金，复现不了累计手续费与累计资金费。
+
+### 把「为什么」讲清楚
+
+凡是拒绝或撤销了什么，都同时给出可判定的原因：`CancelReason` 区分五种撤单缘由，
+`ShortfallError` 携带「可用 / 需要 / 缺口」三个数供直接读取，
+`StepResult.Describe` 把一步之内散落各处的事件汇成一段摘要。
+
+引擎最难排查的不是「结果不对」，而是「什么都没发生却不知道为什么」。
 
 ## 5. 验收标准
 
@@ -108,7 +133,8 @@ bal := sim.Balance()     // ≅ GET /api/v5/account/balance
 
 ### 对拍工具选型
 
-使用 `github.com/dream-until-dawn/okx-api-v5-go`（同作者实现，v0.1.0）作为数据源与下单通道：
+使用 `github.com/dream-until-dawn/okx-api-v5-go`（同作者实现）作为鉴权侧的下单通道；
+公共参考数据走本项目自己的 `refdata/live`：
 
 ```go
 client, err := okx.NewClient(
@@ -119,7 +145,24 @@ client, err := okx.NewClient(
 
 该包的数值类型是 `Num string`，**无损保留 OKX 返回的原始字符串**，
 与 `decimal.Decimal` 之间通过 `decimal.NewFromString` 无损互转，因此 **diff 可以做到字符级**。
-其依赖树只有 `gorilla/websocket`。
+
+对拍有三种互补的模式：
+
+| 模式 | 验什么 |
+|---|---|
+| `trade` | 从空仓开始的完整流程：资金流转、盈亏、手续费 |
+| `check` | 给定任意状态，各项风险指标算得对不对（只读，不交易） |
+| `adjust` | 从既有状态出发做加减仓，含累计量的增量演化 |
+
+`check` 能覆盖 `trade` 难以构造的情形，且逐仓与全仓都走得通——实测一次同时核对
+一个全仓仓位与两个距强平 0.6% 的 40 倍杠杆逐仓多空仓位，20 个字段全部一致。
+
+全仓的重建与逐仓不同：现金余额必须取真值（全仓保证金率的分母是整个币种的权益），
+且同币种的全仓仓位要一并置入（查档是合并的）。
+
+⚠️ **规则数据必须取自所交易的同一环境。** 模拟盘与生产的档位区间相差十倍，
+用错环境会让每个依赖档位、价格精度或杠杆的计算都偏，而偏差看起来像模拟器
+自身的缺陷。见 [okx-rules.md §9](./okx-rules.md)。
 
 ⚠️ 模拟盘凭证存放于项目根目录 `.env`（已被 `.gitignore` 忽略），**严禁提交**。
 `cmd/conformance` 从环境变量读取，不得硬编码。

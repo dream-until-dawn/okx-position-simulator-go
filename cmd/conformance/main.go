@@ -6,7 +6,14 @@
 // 用法：
 //
 //	cd cmd/conformance
-//	go run . -inst BTC-USDT-SWAP -lever 5
+//	go run . -inst BTC-USDT-SWAP -lever 5   真实下单后逐字段对拍
+//	go run . -mode check                     只核对账户现有仓位的风险指标，不交易
+//	go run . -mode adjust -inst BTC-USDT-SWAP -sz 0.05
+//	                                         在现有仓位上加减仓，比对含累计量的变动
+//
+// check 模式与下单流程互补：那个验的是「一连串操作后状态对不对」，这个验的是
+// 「给定一个任意状态，各项指标算得对不对」。后者能覆盖前者很难构造的情形——
+// 高杠杆、逼近强平、多空同时持有——且不动账户，随时可跑。
 //
 // 凭证从环境变量或仓库根目录的 .env 读取：
 // OKX_API_KEY、OKX_API_SECRET、OKX_API_PASSPHRASE。
@@ -48,17 +55,20 @@ func main() {
 		lever  = flag.String("lever", "5", "杠杆")
 		sz     = flag.String("sz", "1", "每步的基础张数")
 		envPos = flag.String("env", "", "凭证文件路径，默认为仓库根目录的 .env")
+		mode   = flag.String("mode", "trade", "trade=真实下单后逐字段对拍；check=只核对现有仓位的风险指标，不交易；adjust=在现有仓位上加减仓并比对变动")
+		addSz  = flag.String("add", "", "adjust 模式的加仓张数，默认与 -sz 相同")
+		cutSz  = flag.String("cut", "", "adjust 模式的减仓张数，默认与 -sz 相同")
 		wait   = flag.Duration("settle", 1200*time.Millisecond, "下单后等待账户状态落定的时间")
 	)
 	flag.Parse()
 
-	if err := run(*instID, *lever, *sz, *envPos, *wait); err != nil {
+	if err := run(*mode, *instID, *lever, *sz, *addSz, *cutSz, *envPos, *wait); err != nil {
 		fmt.Fprintf(os.Stderr, "\n对拍失败: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(instID, lever, baseSz, envPath string, settle time.Duration) error {
+func run(mode, instID, lever, baseSz, addSz, cutSz, envPath string, settle time.Duration) error {
 	ctx := context.Background()
 
 	key, secret, pass, err := credentials(envPath)
@@ -72,6 +82,23 @@ func run(instID, lever, baseSz, envPath string, settle time.Duration) error {
 	)
 	if err != nil {
 		return fmt.Errorf("创建 OKX 客户端失败: %w", err)
+	}
+
+	switch mode {
+	case "check":
+		return runCheck(ctx, client, "SWAP")
+	case "adjust":
+		if addSz == "" {
+			addSz = baseSz
+		}
+		if cutSz == "" {
+			cutSz = baseSz
+		}
+		return runAdjust(ctx, client, instID,
+			decimal.RequireFromString(addSz), decimal.RequireFromString(cutSz), settle)
+	case "trade":
+	default:
+		return fmt.Errorf("未知的模式 %q，应为 trade、check 或 adjust", mode)
 	}
 
 	cfg, err := client.Account.Config(ctx)

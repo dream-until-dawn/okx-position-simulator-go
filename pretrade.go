@@ -172,12 +172,22 @@ func (s *Simulator) MaxSize(instID string, tdMode types.TdMode, px decimal.Decim
 		lever = s.Leverage(instID, mgnMode, types.PosLong)
 	}
 
-	byPx := maxSizeAt(inst, bal.AvailBal, px, lever, rate.Taker.Abs())
-	m := MaxSize{MaxBuy: byPx, MaxSell: byPx}
-
+	taker := rate.Taker.Abs()
 	markPx := s.marks[instID]
+
+	var lossBuy, lossSell decimal.Decimal
+	if mgnMode == types.MgnCross {
+		lossBuy = crossOpenLoss(inst, types.Buy, px, markPx)
+		lossSell = crossOpenLoss(inst, types.Sell, px, markPx)
+	}
+
+	m := MaxSize{
+		MaxBuy:  maxSizeAt(inst, bal.AvailBal, px, lever, taker, lossBuy),
+		MaxSell: maxSizeAt(inst, bal.AvailBal, px, lever, taker, lossSell),
+	}
 	if markPx.IsPositive() && !markPx.Equal(px) {
-		if byMark := maxSizeAt(inst, bal.AvailBal, markPx, lever, rate.Taker.Abs()); byMark.LessThan(byPx) {
+		if byMark := maxSizeAt(inst, bal.AvailBal, markPx, lever, taker,
+			lossSell); byMark.LessThan(m.MaxSell) {
 			m.MaxSell = byMark
 		}
 	}
@@ -185,21 +195,54 @@ func (s *Simulator) MaxSize(instID string, tdMode types.TdMode, px decimal.Decim
 }
 
 // maxSizeAt 计算在给定价格下可用余额最多支撑多少张，已按 lotSz 向下取整。
-func maxSizeAt(inst refdata.Instrument, avail, px, lever, takerRate decimal.Decimal) decimal.Decimal {
+// maxSizeAt 按单一价格计算最多能开多少张。
+//
+// perLoss 是【每张】开仓瞬间就会产生的盯市浮亏，只在全仓下非零，见 MaxSize。
+func maxSizeAt(inst refdata.Instrument, avail, px, lever, takerRate,
+	perLoss decimal.Decimal) decimal.Decimal {
+
 	if !avail.IsPositive() || !lever.IsPositive() {
 		return decimal.Zero
 	}
-	// 每张所需 = 每张保证金 + 每张手续费
+	// 每张所需 = 每张保证金 + 每张手续费 + 每张开仓即产生的浮亏
 	one := inst.ContractQty(decimal.NewFromInt(1))
 	perNotional := one.Mul(px)
 	if inst.IsInverse() {
 		perNotional = div(one, px)
 	}
-	per := div(perNotional, lever).Add(perNotional.Mul(takerRate))
+	per := div(perNotional, lever).Add(perNotional.Mul(takerRate)).Add(perLoss)
 	if !per.IsPositive() {
 		return decimal.Zero
 	}
 	return refdata.FloorToStep(div(avail, per), inst.LotSz)
+}
+
+// crossOpenLoss 返回全仓下每张开仓即产生的盯市浮亏。
+//
+// 逐仓没有这一项：浮亏落在仓位保证金上，可用余额不受影响。全仓的保证金从未离开
+// 现金余额，浮亏直接扣减可用余额，因此以劣于标记价的价格开仓，一成交就先亏掉
+// 一截可用额度，能开的张数随之减少。
+//
+// 实测差距很大：标记价 2447、以 3180.83 挂买单时，不计这一项算出 94.23 张，
+// OKX 给的是 28.59 —— 高估 3.3 倍。价格越偏离标记价，高估越离谱。
+//
+// 只算不利的一侧。以优于标记价的价格开仓会立刻产生浮盈，而 OKX 不让这笔浮盈
+// 撑起更大的仓位：实测标记价 2446、以 1712.75 挂买单时 OKX 给 175 张，正是
+// 不含任何浮盈加成的数。
+func crossOpenLoss(inst refdata.Instrument, side types.Side,
+	px, markPx decimal.Decimal) decimal.Decimal {
+
+	if !markPx.IsPositive() || inst.IsInverse() {
+		return decimal.Zero
+	}
+	diff := px.Sub(markPx)
+	if side == types.Sell {
+		diff = diff.Neg()
+	}
+	if !diff.IsPositive() {
+		return decimal.Zero
+	}
+	return inst.ContractQty(decimal.NewFromInt(1)).Mul(diff)
 }
 
 // PreviewFill 预演一笔成交，返回它会造成的影响，但不改变任何状态。
@@ -246,14 +289,18 @@ func (s *Simulator) PreviewFill(f Fill) (FillResult, error) {
 	}
 	res := applyFill(pos, f, inst, rate.Of(f.ExecType), s.cfg.PosMode)
 
-	// 补上保证金变化，使预演的仓位与真实成交后一致
-	md := computeMarginDelta(res, notional(inst, res.OpenedSz, f.Px), pos.Lever)
-	after := res.After
-	after.Margin = pos.Margin.Sub(md.Release).Add(md.Add)
-	if after.IsEmpty() {
-		after.Margin = decimal.Zero
+	// 补上保证金变化，使预演的仓位与真实成交后一致。
+	// 全仓的保证金不划入仓位，Margin 保持为零——这与 OKX 在全仓仓位上把 margin
+	// 字段返回为空串是一致的。
+	if mgnMode == types.MgnIsolated {
+		md := computeMarginDelta(res, inst, notional(inst, res.OpenedSz, f.Px), pos.Lever, mgnMode)
+		after := res.After
+		after.Margin = pos.Margin.Sub(md.Release).Add(md.Add)
+		if after.IsEmpty() {
+			after.Margin = decimal.Zero
+		}
+		res.After = after
 	}
-	res.After = after
 	return res, nil
 }
 

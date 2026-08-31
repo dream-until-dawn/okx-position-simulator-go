@@ -236,11 +236,31 @@ func TestIsLiquidatable(t *testing.T) {
 		{"1.0000001", false},
 		{"1", true},
 		{"0.8", true},
+		{"0", true}, // 权益已被耗尽，最该强平
 	}
 	for _, c := range cases {
-		m := Metrics{MgnRatio: dec(c.ratio)}
+		m := Metrics{MgnRatio: dec(c.ratio), HasPosition: true}
 		if got := m.IsLiquidatable(); got != c.want {
 			t.Errorf("保证金率 %s 判定为可强平=%v，期望 %v", c.ratio, got, c.want)
 		}
+	}
+}
+
+// TestIsLiquidatableNeedsPosition 保证金率为零有两种截然不同的含义，
+// 必须靠 HasPosition 区分，不能只看数值。
+//
+// 「没有仓位」与「权益已被亏损或资金费耗尽」的保证金率都是零，而后者恰恰最该
+// 强平。早先只用 MgnRatio 非零来排除空仓，结果是被资金费耗穿的仓位反而爆不掉。
+func TestIsLiquidatableNeedsPosition(t *testing.T) {
+	// 无仓位：保证金率为零也不该判为可强平
+	if (Metrics{}).IsLiquidatable() {
+		t.Error("空仓不应被判定为可强平")
+	}
+	if (Metrics{MgnRatio: dec("0")}).IsLiquidatable() {
+		t.Error("无仓位时保证金率为零不应被判定为可强平")
+	}
+	// 有仓位且权益耗尽：必须判为可强平
+	if !(Metrics{HasPosition: true, MgnRatio: dec("0")}).IsLiquidatable() {
+		t.Error("有仓位且权益耗尽时必须判定为可强平")
 	}
 }
