@@ -442,3 +442,73 @@ func TestAdjustMarginFloorCountsUnrealizedLoss(t *testing.T) {
 		t.Error("浮盈不应让可减额超过追加的部分加上原有空间")
 	}
 }
+
+// TestInstrumentAccessor 模拟器要能给出合约规格。
+//
+// 回测引擎每根 K 线都要用 lotSz 取整张数、用 tickSz 取整价格。让调用方自己另留
+// 一份 RefData 不只是麻烦——两份一旦不是同一个（比如其中一份被自动刷新换掉），
+// 取整用的规则就和模拟器实际用的不是一套，而这种偏差不报错，只会让结果悄悄不对。
+func TestInstrumentAccessor(t *testing.T) {
+	s := newSim(t, types.NetMode)
+
+	inst, err := s.Instrument("BTC-USDT-SWAP")
+	if err != nil {
+		t.Fatalf("取合约规格失败: %v", err)
+	}
+	eq(t, inst.LotSz, "0.01", "lotSz")
+	if inst.InstID != "BTC-USDT-SWAP" {
+		t.Errorf("instId = %q", inst.InstID)
+	}
+	// 拿到之后取整方法直接可用
+	eq(t, inst.RoundSize(dec("3.14159")), "3.14", "按 lotSz 取整")
+
+	if _, err := s.Instrument("NOPE-USDT-SWAP"); !okxerr.HasCode(err, okxerr.CodeInstNotExist) {
+		t.Errorf("未知合约的错误 = %v，期望 51001", err)
+	}
+}
+
+// TestMetricsAt 假设价格下的风险指标，且不污染行情表。
+//
+// 压力测试要问「价格到 X 时爆不爆」。此前只能改掉标记价、算完再改回来——那是有
+// 状态的做法，中途出错会把行情表留在错误的值上，改标记价本身也可能触发别的东西。
+func TestMetricsAt(t *testing.T) {
+	s := newSim(t, types.NetMode)
+	mustFill(t, s, netFill(types.Buy, "4", "78000"))
+	if err := s.SetMarkPx("BTC-USDT-SWAP", dec("78000")); err != nil {
+		t.Fatal(err)
+	}
+
+	base, err := s.MetricsOf("BTC-USDT-SWAP", types.PosNet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, base.UPL, "0", "当前浮盈")
+
+	// 假设跌到 77000
+	at, err := s.MetricsAt("BTC-USDT-SWAP", types.PosNet, dec("77000"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, at.UPL, "-40", "假设价下的浮盈")
+	if !at.MgnRatio.LessThan(base.MgnRatio) {
+		t.Errorf("跌价后的保证金率 %s 应低于当前的 %s", at.MgnRatio, base.MgnRatio)
+	}
+
+	// 行情表不该被污染
+	eq(t, s.MarkPx("BTC-USDT-SWAP"), "78000", "标记价不应被 MetricsAt 改动")
+	again, _ := s.MetricsOf("BTC-USDT-SWAP", types.PosNet)
+	eq(t, again.UPL, "0", "再查一次仍是当前价下的结果")
+
+	// 跌到强平价之下应当判定为可强平
+	deep, err := s.MetricsAt("BTC-USDT-SWAP", types.PosNet, base.LiqPx.Sub(dec("100")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !deep.IsLiquidatable() {
+		t.Errorf("跌破强平价 %s 后应判定为可强平，实际保证金率 %s", base.LiqPx, deep.MgnRatio)
+	}
+
+	if _, err := s.MetricsAt("BTC-USDT-SWAP", types.PosNet, dec("0")); err == nil {
+		t.Error("非正数的标记价应当被拒绝")
+	}
+}

@@ -18,7 +18,7 @@ import (
 func TestExportedAPIIsFrozen(t *testing.T) {
 	want := []string{
 		// —— 构造与配置 ——
-		"FeeSchedule", "PosMode",
+		"FeeSchedule", "PosMode", "Instrument",
 		// —— 资金 ——
 		"CashBal", "Deposit", "Withdraw",
 		"BalanceOf", "Balances", "BalanceViews",
@@ -30,7 +30,7 @@ func TestExportedAPIIsFrozen(t *testing.T) {
 		// —— 仓位 ——
 		"Fill", "PreviewFill", "SetPosition",
 		"PositionOf", "Positions", "PositionViews",
-		"MetricsOf", "CrossMetricsOf", "AdjustMargin",
+		"MetricsOf", "MetricsAt", "CrossMetricsOf", "AdjustMargin",
 		// —— 委托 ——
 		"PlaceOrder", "CancelOrder", "PendingOrderOf", "PendingOrders",
 		"OrderCost", "MaxSize",

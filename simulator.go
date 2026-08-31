@@ -100,6 +100,20 @@ func New(cfg Config) (*Simulator, error) {
 	}, nil
 }
 
+// Instrument 返回某合约的规格。
+//
+// 回测引擎离不开它：按可用资金定量之后要用 lotSz 取整，挂单价要用 tickSz 取整，
+// 算名义价值要用 ctVal。这些每根 K 线都在做。
+//
+// 之所以要由模拟器转发而不是让调用方自己留一份 RefData，是为了**只有一个事实
+// 来源**：两份 RefData 一旦不是同一个（比如其中一份被自动刷新换掉了），取整用的
+// 规则就和模拟器实际用的不是一套，而这种偏差不会报错，只会让结果悄悄不对。
+//
+// 拿到 Instrument 后可直接用它的 RoundSize / RoundPrice / ValidateSize。
+func (s *Simulator) Instrument(instID string) (refdata.Instrument, error) {
+	return s.cfg.RefData.Instrument(instID)
+}
+
 // PosMode 返回持仓方式。
 func (s *Simulator) PosMode() types.PosMode { return s.cfg.PosMode }
 
@@ -383,6 +397,49 @@ func (s *Simulator) MetricsOf(instID string, posSide types.PosSide) (Metrics, er
 	}
 
 	// 全仓的权益与保证金率是结算币种级的，单个仓位算不出来。
+	if pos.MgnMode == types.MgnCross {
+		cm, err := s.CrossMetricsOf(inst.SettleCcy)
+		if err != nil {
+			return Metrics{}, err
+		}
+		m.Equity, m.MgnRatio, m.LiqPx = cm.Equity, cm.MgnRatio, cm.LiqPx
+	}
+	return m, nil
+}
+
+// MetricsAt 计算某个仓位在【给定标记价】下的风险指标，不改变任何状态。
+//
+// 与 MetricsOf 的唯一区别是价格由调用方给出。压力测试与风控预演要问的是
+// 「价格到 X 时保证金率多少、爆不爆」，此前只能改掉标记价、算完再改回来——
+// 那是有状态的做法，中途出错就会把行情表污染掉，而且改标记价本身可能触发别的东西。
+//
+// 全仓的权益与保证金率仍取所属结算币种的整体值，而那一部分用的是各仓位【当前】
+// 的标记价：只把一个合约的价格换掉，其余合约的风险不会跟着变。跨合约的整体压力
+// 测试须由调用方自行组合。
+func (s *Simulator) MetricsAt(instID string, posSide types.PosSide,
+	markPx decimal.Decimal) (Metrics, error) {
+
+	if !markPx.IsPositive() {
+		return Metrics{}, okxerr.New(okxerr.CodeParamError,
+			"markPx: 标记价须为正数，实为 %s", markPx)
+	}
+	pos, ok := s.PositionOf(instID, posSide)
+	if !ok {
+		return Metrics{}, nil
+	}
+	inst, err := s.cfg.RefData.Instrument(instID)
+	if err != nil {
+		return Metrics{}, err
+	}
+	tier, err := s.tierOf(pos, inst)
+	if err != nil {
+		return Metrics{}, err
+	}
+	rate, err := s.fees.Rate(inst)
+	if err != nil {
+		return Metrics{}, err
+	}
+	m := computeMetrics(pos, inst, tier, markPx, rate.Taker)
 	if pos.MgnMode == types.MgnCross {
 		cm, err := s.CrossMetricsOf(inst.SettleCcy)
 		if err != nil {
