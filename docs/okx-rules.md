@@ -126,7 +126,73 @@ fundingRate > 0：多头付空头
 6. **组合保证金(PM, acctLv=4) 的 MMR 是压力测试矩阵算出来的**，不是查表。
    工作量约等于本项目其余部分之和 —— 已明确排除在 v1.0 范围外。
 
-## 4. 来源
+## 4. 实测验证记录
+
+以下结论**不是从文档抄来的**，而是在 OKX 模拟盘上执行真实操作后逐字段核算得出。
+数据原文保存在 `testdata/conformance/close-long-isolated-linear.json`。
+
+样本：一笔 ETH-USDT-SWAP 逐仓多头（49.18 张，开仓均价 1805.5767…）的市价全平。
+
+### 4.1 公式验证（差值为纯 decimal 精度残差）
+
+| 验证项 | 公式 | 差值 |
+|---|---|---|
+| 已实现盈亏 | `ctVal × sz × ctMult × (closeAvgPx − openAvgPx)` | `1.6e-15` |
+| 吃单手续费 | `ctVal × sz × ctMult × closeAvgPx × 0.0005` | `6.9e-19` |
+| 未实现盈亏 | `ctVal × pos × ctMult × (markPx − avgPx)` | `4.6e-13` |
+| 维持保证金率 | 由 `position.mmr ÷ 名义价值` 反推得 `0.004`，正是 ETH-USDT 首档 mmr | 精确命中 |
+
+### 4.2 逐仓账务模型
+
+```
+平仓后 cashBal = 平仓前 cashBal + margin + pnl + fee      差值 -1.1e-14
+isoEq          = margin + upl
+eq(币种权益)   = cashBal + isoEq
+frozenBal      = isoEq
+```
+
+第一条确立了一个关键事实：**逐仓保证金是从 cashBal 划走的，不是冻结**。
+「保证金仅冻结、cashBal 不变」的假设与实测差整整一个 margin，已被排除。
+
+逐笔 fill 的 fee 之和**精确等于**订单级 fee（差值为 0）。
+
+### 4.3 字段语义陷阱
+
+这几个字段的名字与实际含义不符，是「字段级同构」最容易翻车的地方：
+
+| 字段 | 实际含义 |
+|---|---|
+| `position.mmr` | 维持保证金**金额**（如 47.91 USDT），**不是比率** |
+| `order.fillSz` | **最新一笔**成交的数量，不是累计量 |
+| `order.accFillSz` | **累计**成交数量，全部成交后才等于 sz |
+| `balance.frozenBal` | 逐仓占用体现在此，数值等于 isoEq |
+
+一笔市价单会被拆成多笔成交（样本中为 15 笔），每笔独立计费、`execType` 均为 `T`。
+
+### 4.4 错误码（全部实测取得）
+
+| 码 | 含义 | 实测触发条件 |
+|---|---|---|
+| `50014` | Parameter {x} can not be empty | 公共接口缺必填参数 |
+| `50015` | Either parameter {a} or {b} is required | 缺 instFamily/uly |
+| `51000` | Parameter {x} error | posSide / tdMode / sz 格式非法 |
+| `51001` | Instrument ID doesn't exist | 不存在的 instId |
+| `51005` | Order amount exceeds the max order amount | 张数超档位上限 |
+| `51006` | Order price is not within the price limit | 超出价格带 |
+| `51008` | Available balance is insufficient | 可用余额不足 |
+| `51121` | Order quantity must be a multiple of the lot size | 非 lotSz 整数倍 |
+
+实测 459 个永续合约的 `minSz` 与 `lotSz` **全部相等**，因此「低于最小下单量」与
+「非数量精度整数倍」对永续而言是同一件事，OKX 统一返回 `51121`。
+
+### 4.5 尚未定论
+
+**tickSz 是否强制校验。** 一笔远离市价、价格 `10000.05` 而 `tickSz` 为 `0.1` 的限价买单
+被 OKX 接受，且 `px` 被**原样存储而非取整**；近市价的复验因当时可用余额不足被提前拦截，
+未取得结论。仅凭单个样本不足以定论，留待 v0.2.0 对拍时解决。
+在此之前，价格精度校验在库中是**显式调用**而非默认强制。
+
+## 5. 来源
 
 - [合约盈亏计算规则](https://www.okx.com/zh-hans/help/futures-pnl-calculation-rules)
 - [阶梯维持保证金率规则](https://www.okx.com/zh-hans/help/v-tiered-maintenance-margin-ratio-rules)

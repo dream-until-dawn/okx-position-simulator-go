@@ -18,9 +18,15 @@ const (
 	CodeParamRequired = "50015" // Either parameter {a} or {b} is required
 )
 
-// 产品与档位类错误码。
+// 产品与下单校验类错误码。
+//
+// 以下各码均通过对 OKX 模拟盘构造非法请求实测得到，括号内为实测触发条件。
 const (
-	CodeInstNotExist = "51001" // Instrument ID doesn't exist
+	CodeInstNotExist       = "51001" // Instrument ID doesn't exist（不存在的 instId）
+	CodeExceedsMaxOrderAmt = "51005" // Order amount exceeds the max order amount（张数超档位上限）
+	CodeOutOfPriceLimit    = "51006" // Order price is not within the price limit（超出价格带）
+	CodeInsufficientBal    = "51008" // Available balance is insufficient（可用余额不足）
+	CodeNotLotSizeMultiple = "51121" // Order quantity must be a multiple of the lot size
 )
 
 // Error 是携带 OKX 错误码的错误。
