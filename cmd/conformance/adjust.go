@@ -149,7 +149,7 @@ func adjustStep(ctx context.Context, client *okx.Client, sim *okxsim.Simulator,
 	if err != nil {
 		return Result{}, err
 	}
-	if err := sim.SetMark(inst.InstID, num(okxPos.MarkPx)); err != nil {
+	if err := sim.SetMarkPx(inst.InstID, num(okxPos.MarkPx)); err != nil {
 		return Result{}, err
 	}
 	simPos, ok := sim.PositionOf(inst.InstID, posSide)

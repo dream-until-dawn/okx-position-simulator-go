@@ -39,7 +39,7 @@ func Example() {
 		r.After.Pos, r.After.AvgPx, r.After.Margin, r.Fee)
 
 	// 推送行情后查看风险指标
-	if err := sim.SetMark("BTC-USDT-SWAP", d("77000")); err != nil {
+	if err := sim.SetMarkPx("BTC-USDT-SWAP", d("77000")); err != nil {
 		log.Fatal(err)
 	}
 	m, err := sim.MetricsOf("BTC-USDT-SWAP", types.PosNet)
@@ -49,7 +49,7 @@ func Example() {
 	fmt.Printf("未实现盈亏 %s，档位 %d，维持保证金 %s\n", m.UPL, m.Tier, m.MMR)
 	fmt.Printf("保证金率 %s，已触及强平线 %v\n", m.MgnRatio.Round(4), m.IsLiquidatable())
 
-	b, err := sim.Balance("USDT")
+	b, err := sim.BalanceOf("USDT")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func ExampleSimulator_OrderCost() {
 	if err := sim.Deposit("USDT", d("10000")); err != nil {
 		log.Fatal(err)
 	}
-	if err := sim.SetMark("BTC-USDT-SWAP", d("78000")); err != nil {
+	if err := sim.SetMarkPx("BTC-USDT-SWAP", d("78000")); err != nil {
 		log.Fatal(err)
 	}
 
@@ -197,7 +197,7 @@ func ExampleSimulator_Advance() {
 			f.OpenedSz, f.After.AvgPx, f.Fee)
 	}
 
-	b, err := sim.Balance("USDT")
+	b, err := sim.BalanceOf("USDT")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -207,4 +207,159 @@ func ExampleSimulator_Advance() {
 	// 委托状态 live，冻结 617.54
 	// 成交 4 张 @ 77000，手续费 -0.616（挂单成交按 maker 计费）
 	// 持仓建立，冻结已释放：ordFrozen=0
+}
+
+// 全仓：保证金不离开现金余额，风险按结算币种整体核算。
+func ExampleSimulator_CrossMetricsOf() {
+	sim, err := okxsim.New(okxsim.Config{
+		PosMode: types.LongShortMode,
+		RefData: refdata.MustEmbedded(),
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := sim.Deposit("USDT", d("10000")); err != nil {
+		log.Fatal(err)
+	}
+	if err := sim.SetLeverage("BTC-USDT-SWAP", types.MgnCross, types.PosLong, d("10")); err != nil {
+		log.Fatal(err)
+	}
+
+	r, err := sim.Fill(okxsim.Fill{
+		InstID: "BTC-USDT-SWAP", TdMode: types.TdCross,
+		Side: types.Buy, PosSide: types.PosLong,
+		Sz: d("4"), Px: d("78000"), ExecType: types.Taker, Ts: 1,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	// 全仓开仓只扣手续费；仓位的 Margin 恒为零，那笔钱从未离开现金
+	fmt.Printf("仓位保证金 %s，现金 %s\n", r.After.Margin, sim.CashBal("USDT"))
+
+	cm, err := sim.CrossMetricsOf("USDT")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("全仓权益 %s，初始保证金 %s，维持保证金 %s\n", cm.Equity, cm.IMR, cm.MMR)
+	// 强平价为零表示【够不着】：现金远厚于仓位，价格跌到零也爆不掉。
+	// OKX 此时返回空串，本库返回零——不给一个负数冒充价格。
+	fmt.Printf("保证金率 %s，强平价 %s\n", cm.MgnRatio.Round(4), cm.LiqPx)
+
+	// Output:
+	// 仓位保证金 0，现金 9998.44
+	// 全仓权益 9998.44，初始保证金 312，维持保证金 12.48
+	// 保证金率 712.1396，强平价 0
+}
+
+// 币本位：账户层一行不用改，只是计价单位从 USDT 变成标的币。
+func ExampleSimulator_Fill_inverse() {
+	sim, err := okxsim.New(okxsim.Config{
+		PosMode:      types.NetMode,
+		RefData:      refdata.MustEmbedded(),
+		DefaultLever: d("10"),
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	// 币本位用标的币做保证金
+	if err := sim.Deposit("BTC", d("1")); err != nil {
+		log.Fatal(err)
+	}
+
+	r, err := sim.Fill(okxsim.Fill{
+		InstID: "BTC-USD-SWAP", TdMode: types.TdIsolated,
+		Side: types.Buy, PosSide: types.PosNet,
+		Sz: d("50"), Px: d("80000"), ExecType: types.Taker, Ts: 1,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	// Q = 100 USD × 50 张 = 5000 USD，除以价格得标的币金额
+	fmt.Printf("保证金 %s BTC，手续费 %s BTC\n", r.After.Margin, r.Fee)
+
+	if err := sim.SetMarkPx("BTC-USD-SWAP", d("76000")); err != nil {
+		log.Fatal(err)
+	}
+	m, err := sim.MetricsOf("BTC-USD-SWAP", types.PosNet)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("未实现盈亏 %s BTC，强平价 %s\n", m.UPL.Round(8), m.LiqPx.Round(1))
+
+	// Output:
+	// 保证金 0.00625 BTC，手续费 -0.00003125 BTC
+	// 未实现盈亏 -0.00328947 BTC，强平价 73054.6
+}
+
+// 移动止损：触发价跟着极值棘轮，只进不退。
+func ExampleSimulator_PlaceAlgoOrder() {
+	sim, err := okxsim.New(okxsim.Config{
+		PosMode:      types.LongShortMode,
+		RefData:      refdata.MustEmbedded(),
+		DefaultLever: d("5"),
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := sim.Deposit("USDT", d("10000")); err != nil {
+		log.Fatal(err)
+	}
+	if _, err := sim.Fill(okxsim.Fill{
+		InstID: "BTC-USDT-SWAP", TdMode: types.TdIsolated,
+		Side: types.Buy, PosSide: types.PosLong,
+		Sz: d("2"), Px: d("78000"), ExecType: types.Taker, Ts: 1,
+	}); err != nil {
+		log.Fatal(err)
+	}
+
+	// 移动止损要有个参考价才起得了步——回测里推进一根 K 线即可
+	if _, err := sim.Advance(okxsim.Bar{
+		InstID: "BTC-USDT-SWAP", Last: d("78000"),
+		High: d("78000"), Low: d("78000"), Ts: 1,
+	}); err != nil {
+		log.Fatal(err)
+	}
+
+	// 挂一张 5% 的移动止损。算法委托不冻结任何资金。
+	before, _ := sim.BalanceOf("USDT")
+	if _, err := sim.PlaceAlgoOrder(okxsim.AlgoOrder{
+		AlgoID: "ts", InstID: "BTC-USDT-SWAP", TdMode: types.TdIsolated,
+		Side: types.Sell, PosSide: types.PosLong, OrdType: types.AlgoMoveStop,
+		Sz: d("2"), ReduceOnly: true, CallbackRatio: d("0.05"),
+	}); err != nil {
+		log.Fatal(err)
+	}
+	after, _ := sim.BalanceOf("USDT")
+	fmt.Printf("挂单前后可用余额是否相同：%v\n", before.AvailBal.Equal(after.AvailBal))
+
+	a, _ := sim.PendingAlgoOf("ts")
+	fmt.Printf("挂单时的触发价 %s\n", a.TriggerPx)
+
+	// 涨到 84000：触发价跟着往上棘轮
+	if _, err := sim.Advance(okxsim.Bar{
+		InstID: "BTC-USDT-SWAP", Last: d("84000"),
+		High: d("84000"), Low: d("83000"), Ts: 2,
+	}); err != nil {
+		log.Fatal(err)
+	}
+	a, _ = sim.PendingAlgoOf("ts")
+	fmt.Printf("涨到 84000 后 %s\n", a.TriggerPx)
+
+	// 回落跌破：触发，当场成交
+	step, err := sim.Advance(okxsim.Bar{
+		InstID: "BTC-USDT-SWAP", Last: d("79000"),
+		High: d("83000"), Low: d("79000"), Ts: 3,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, t := range step.AlgoTriggers {
+		fmt.Println(t)
+	}
+
+	// Output:
+	// 挂单前后可用余额是否相同：true
+	// 挂单时的触发价 74100
+	// 涨到 84000 后 79800
+	// 算法委托 ts（BTC-USDT-SWAP move_order_stop）移动止损 于 79800 触发，当场成交（开 0 张 / 平 2 张，盈亏 36）
 }

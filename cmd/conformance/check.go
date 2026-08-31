@@ -110,7 +110,7 @@ func checkPosition(ctx context.Context, client *okx.Client,
 			}); err != nil {
 				return Result{}, fmt.Errorf("重建全仓仓位 %s 失败: %w", o.InstID, err)
 			}
-			if err := sim.SetMark(o.InstID, num(o.MarkPx)); err != nil {
+			if err := sim.SetMarkPx(o.InstID, num(o.MarkPx)); err != nil {
 				return Result{}, err
 			}
 		}
@@ -134,7 +134,7 @@ func checkPosition(ctx context.Context, client *okx.Client,
 		}); err != nil {
 			return Result{}, fmt.Errorf("重建仓位失败: %w", err)
 		}
-		if err := sim.SetMark(p.InstID, num(p.MarkPx)); err != nil {
+		if err := sim.SetMarkPx(p.InstID, num(p.MarkPx)); err != nil {
 			return Result{}, err
 		}
 	}

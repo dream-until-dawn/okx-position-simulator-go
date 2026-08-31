@@ -179,10 +179,10 @@ func TestBalanceComposition(t *testing.T) {
 	s := newSim(t, types.NetMode)
 	mustFill(t, s, netFill(types.Buy, "4", "78088.1605"))
 
-	if err := s.SetMark("BTC-USDT-SWAP", dec("78078.34")); err != nil {
+	if err := s.SetMarkPx("BTC-USDT-SWAP", dec("78078.34")); err != nil {
 		t.Fatalf("设置标记价失败: %v", err)
 	}
-	b, err := s.Balance("USDT")
+	b, err := s.BalanceOf("USDT")
 	if err != nil {
 		t.Fatalf("查询余额失败: %v", err)
 	}

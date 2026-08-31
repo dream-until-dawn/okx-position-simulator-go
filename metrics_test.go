@@ -88,7 +88,7 @@ func TestMetricsAgainstRealPositions(t *testing.T) {
 			pos, inst, tier := buildFromReal(t, s.Instrument, s.Position)
 			markPx := dec(fieldOf(t, s.Position, "markPx"))
 
-			m := ComputeMetrics(pos, inst, tier, markPx, dec(takerRate))
+			m := computeMetrics(pos, inst, tier, markPx, dec(takerRate))
 
 			// 相对容差：OKX 与本实现的除法舍入策略未必逐位相同。
 			relNear := func(got, want decimal.Decimal, field string) {
@@ -131,7 +131,7 @@ func TestLiqPxTickBuffer(t *testing.T) {
 		markPx := dec(fieldOf(t, s.Position, "markPx"))
 		real := dec(fieldOf(t, s.Position, "liqPx"))
 
-		withBuf := ComputeMetrics(pos, inst, tier, markPx, dec(takerRate)).LiqPx
+		withBuf := computeMetrics(pos, inst, tier, markPx, dec(takerRate)).LiqPx
 
 		// 去掉缓冲：多头减回一个 tick、空头加回一个 tick
 		noBuf := withBuf.Sub(inst.TickSz)
@@ -177,7 +177,7 @@ func TestUPLRatioUsesOpenInitialMargin(t *testing.T) {
 	nom := notional(inst, pos.AbsPos(), markPx)
 	tier := refdata.PositionTier{Tier: 1, MMR: div(dec(str("mmr")), nom)}
 
-	m := ComputeMetrics(pos, inst, tier, markPx, dec(takerRate))
+	m := computeMetrics(pos, inst, tier, markPx, dec(takerRate))
 	real := dec(str("uplRatio"))
 
 	near(t, m.UPLRatio, real, "1e-9", "收益率")
@@ -199,7 +199,7 @@ func TestMMRIsAmountNotRate(t *testing.T) {
 
 	pos, inst, tier := buildFromReal(t, s.Instrument, s.Position)
 	markPx := dec(fieldOf(t, s.Position, "markPx"))
-	m := ComputeMetrics(pos, inst, tier, markPx, dec(takerRate))
+	m := computeMetrics(pos, inst, tier, markPx, dec(takerRate))
 
 	if m.MMR.LessThan(decimal.NewFromInt(1)) {
 		t.Errorf("维持保证金金额 = %s，看起来像比率而非金额", m.MMR)
@@ -214,7 +214,7 @@ func TestMMRIsAmountNotRate(t *testing.T) {
 }
 
 func TestMetricsEmptyPosition(t *testing.T) {
-	m := ComputeMetrics(emptyNetPos(), btcSwap(t), refdata.PositionTier{Tier: 1},
+	m := computeMetrics(emptyNetPos(), btcSwap(t), refdata.PositionTier{Tier: 1},
 		dec("70000"), dec(takerRate))
 
 	if !m.UPL.IsZero() || !m.MgnRatio.IsZero() || !m.LiqPx.IsZero() {

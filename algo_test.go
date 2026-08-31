@@ -43,7 +43,7 @@ func placeTrigger(t *testing.T, s *Simulator, id, triggerPx, ordPx string) {
 // 回测里会凭空少掉一大块可用额度。
 func TestAlgoOrderFreezesNothing(t *testing.T) {
 	s := algoSim(t)
-	before, err := s.Balance("USDT")
+	before, err := s.BalanceOf("USDT")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,11 +51,11 @@ func TestAlgoOrderFreezesNothing(t *testing.T) {
 	for i, px := range []string{"70000", "72000", "85000", "90000"} {
 		placeTrigger(t, s, string(rune('a'+i)), px, "")
 	}
-	if n := len(s.AlgoOrders()); n != 4 {
+	if n := len(s.PendingAlgos("")); n != 4 {
 		t.Fatalf("应有 4 笔算法委托，实为 %d", n)
 	}
 
-	after, err := s.Balance("USDT")
+	after, err := s.BalanceOf("USDT")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestTriggerFiresAndFillsAtTriggerPx(t *testing.T) {
 	if len(step.Fills) != 1 {
 		t.Errorf("本步成交应出现在 Fills 里，实际 %d 笔", len(step.Fills))
 	}
-	if len(s.AlgoOrders()) != 0 {
+	if len(s.PendingAlgos("")) != 0 {
 		t.Error("触发后该算法委托应当消失")
 	}
 	p, ok := s.PositionOf("BTC-USDT-SWAP", types.PosLong)
@@ -145,7 +145,7 @@ func TestTriggerWithLimitPxPlacesOrder(t *testing.T) {
 	if step.AlgoTriggers[0].Fill != nil {
 		t.Error("限价委托 75000 高于本步最低价 75800，不该当场成交")
 	}
-	pend := s.PendingOrders()
+	pend := s.PendingOrders("")
 	if len(pend) != 1 {
 		t.Fatalf("应留下一笔限价挂单，实际 %d 笔", len(pend))
 	}
@@ -154,7 +154,7 @@ func TestTriggerWithLimitPxPlacesOrder(t *testing.T) {
 		t.Errorf("生成的委托 ID = %q，应能看出它来自哪笔算法委托的哪条腿", pend[0].OrdID)
 	}
 	// 这笔挂单占用资金，与算法单阶段的零占用形成对照
-	b, _ := s.Balance("USDT")
+	b, _ := s.BalanceOf("USDT")
 	if !b.OrdFrozen.IsPositive() {
 		t.Error("转成普通挂单后应当开始冻结资金")
 	}
@@ -225,7 +225,7 @@ func TestOCOFirstLegVoidsTheOther(t *testing.T) {
 		t.Fatalf("应触发止盈腿，实际 %+v", step.AlgoTriggers)
 	}
 	eq(t, step.AlgoTriggers[0].Px, "82000", "止盈触发价")
-	if len(s.AlgoOrders()) != 0 {
+	if len(s.PendingAlgos("")) != 0 {
 		t.Error("一条腿触发后整笔 OCO 都应作废")
 	}
 }
@@ -245,27 +245,27 @@ func TestTrailingStopRatchets(t *testing.T) {
 		t.Fatalf("挂移动止损失败: %v", err)
 	}
 	// 挂单瞬间的触发价就是「当时价格 × (1 − 回调)」，不需要先出现一段有利行情
-	px0, ok := s.AlgoTriggerPx("m1")
+	pa, ok := s.PendingAlgoOf("m1")
 	if !ok {
 		t.Fatal("查不到该算法委托")
 	}
-	eq(t, px0, "74100", "挂单时的触发价 = 78000 × 0.95")
+	eq(t, pa.TriggerPx, "74100", "挂单时的触发价 = 78000 × 0.95")
 
 	// 涨：触发价跟着往上棘轮
 	if _, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("80000"),
 		High: dec("80000"), Low: dec("79000"), Ts: 2}); err != nil {
 		t.Fatal(err)
 	}
-	px1, _ := s.AlgoTriggerPx("m1")
-	eq(t, px1, "76000", "涨到 80000 后触发价 = 80000 × 0.95")
+	pa1, _ := s.PendingAlgoOf("m1")
+	eq(t, pa1.TriggerPx, "76000", "涨到 80000 后触发价 = 80000 × 0.95")
 
 	// 回落但未触及：触发价不回退
 	if _, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("77000"),
 		High: dec("78000"), Low: dec("76500"), Ts: 3}); err != nil {
 		t.Fatal(err)
 	}
-	px2, _ := s.AlgoTriggerPx("m1")
-	eq(t, px2, "76000", "回落时触发价不应回退")
+	pa2, _ := s.PendingAlgoOf("m1")
+	eq(t, pa2.TriggerPx, "76000", "回落时触发价不应回退")
 
 	// 跌破：触发
 	step, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("75500"),
@@ -299,24 +299,24 @@ func TestTrailingStopShortSide(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("挂移动止损失败: %v", err)
 	}
-	px0, _ := s.AlgoTriggerPx("m2")
-	eq(t, px0, "81900", "挂单时的触发价 = 78000 × 1.05")
+	pa0, _ := s.PendingAlgoOf("m2")
+	eq(t, pa0.TriggerPx, "81900", "挂单时的触发价 = 78000 × 1.05")
 
 	// 跌：触发价跟着往下棘轮
 	if _, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("74000"),
 		High: dec("77000"), Low: dec("74000"), Ts: 2}); err != nil {
 		t.Fatal(err)
 	}
-	px1, _ := s.AlgoTriggerPx("m2")
-	eq(t, px1, "77700", "跌到 74000 后触发价 = 74000 × 1.05")
+	pa1, _ := s.PendingAlgoOf("m2")
+	eq(t, pa1.TriggerPx, "77700", "跌到 74000 后触发价 = 74000 × 1.05")
 
 	// 反弹但未触及：不回升
 	if _, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("76000"),
 		High: dec("77000"), Low: dec("75000"), Ts: 3}); err != nil {
 		t.Fatal(err)
 	}
-	px2, _ := s.AlgoTriggerPx("m2")
-	eq(t, px2, "77700", "反弹时触发价不应回升")
+	pa2, _ := s.PendingAlgoOf("m2")
+	eq(t, pa2.TriggerPx, "77700", "反弹时触发价不应回升")
 }
 
 // TestTriggerPxTypeMark 触发价类型为 mark 时按标记价判，而不是最新价。
@@ -375,7 +375,7 @@ func TestTriggerPxTypeIndexNeedsIdxPx(t *testing.T) {
 	if len(step.AlgoTriggers) != 1 || step.AlgoTriggers[0].Reason == "" {
 		t.Fatalf("缺少指数价时应给出原因而不是悄悄跳过，实际 %+v", step.AlgoTriggers)
 	}
-	if len(s.AlgoOrders()) != 1 {
+	if len(s.PendingAlgos("")) != 1 {
 		t.Error("无从判断时该委托应当留着，而不是被消耗掉")
 	}
 
@@ -397,7 +397,7 @@ func TestAlgoOrderCancel(t *testing.T) {
 	if err := s.CancelAlgoOrder("x1"); err != nil {
 		t.Fatalf("撤销失败: %v", err)
 	}
-	if len(s.AlgoOrders()) != 0 {
+	if len(s.PendingAlgos("")) != 0 {
 		t.Error("撤销后不应还有算法委托")
 	}
 	if err := s.CancelAlgoOrder("x1"); err == nil {

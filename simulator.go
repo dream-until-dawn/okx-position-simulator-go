@@ -174,11 +174,11 @@ func (s *Simulator) Leverage(instID string, mgnMode types.MgnMode, posSide types
 	return s.cfg.DefaultLever
 }
 
-// SetMark 更新标记价。
+// SetMarkPx 更新标记价。
 //
 // 只更新价格，不触发任何风控——资金费结算与强平检查由 Advance 按时钟推进，
 // 这样多个合约在同一时刻的更新顺序就不会影响结果。
-func (s *Simulator) SetMark(instID string, px decimal.Decimal) error {
+func (s *Simulator) SetMarkPx(instID string, px decimal.Decimal) error {
 	if !px.IsPositive() {
 		return okxerr.New(okxerr.CodeParamError, "标记价须为正数，实为 %s", px)
 	}
@@ -372,7 +372,7 @@ func (s *Simulator) MetricsOf(instID string, posSide types.PosSide) (Metrics, er
 	if err != nil {
 		return Metrics{}, err
 	}
-	m := ComputeMetrics(pos, inst, tier, s.markOf(instID, pos.AvgPx), rate.Taker)
+	m := computeMetrics(pos, inst, tier, s.markOf(instID, pos.AvgPx), rate.Taker)
 
 	// 按最新成交价的那一套浮盈另算：ComputeMetrics 是纯函数，拿不到行情表。
 	if lastPx := s.last[instID]; lastPx.IsPositive() && !pos.IsEmpty() {
@@ -393,8 +393,8 @@ func (s *Simulator) MetricsOf(instID string, posSide types.PosSide) (Metrics, er
 	return m, nil
 }
 
-// Balance 返回某币种的余额快照。
-func (s *Simulator) Balance(ccy string) (Balance, error) {
+// BalanceOf 返回某币种的余额快照。
+func (s *Simulator) BalanceOf(ccy string) (Balance, error) {
 	b := Balance{Ccy: ccy, CashBal: s.cash[ccy]}
 
 	for _, p := range s.pos {
@@ -467,7 +467,7 @@ func (s *Simulator) Balances() ([]Balance, error) {
 
 	out := make([]Balance, 0, len(ccys))
 	for _, c := range ccys {
-		b, err := s.Balance(c)
+		b, err := s.BalanceOf(c)
 		if err != nil {
 			return nil, err
 		}
@@ -571,7 +571,7 @@ func (s *Simulator) SetPosition(p Position) error {
 		delete(s.pos, key)
 		return nil
 	}
-	if !IsMultipleOfLot(p.Pos, inst.LotSz) {
+	if !refdata.IsMultipleOf(p.Pos, inst.LotSz) {
 		return okxerr.New(okxerr.CodeNotLotSizeMultiple,
 			"%s: 持仓张数 %s 不是数量精度 %s 的整数倍", p.InstID, p.Pos, inst.LotSz)
 	}

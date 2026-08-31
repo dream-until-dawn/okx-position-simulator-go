@@ -397,11 +397,11 @@ func restorePositions(ctx context.Context, client *okx.Client, sim *okxsim.Simul
 		if err := sim.SetPosition(pos); err != nil {
 			return err
 		}
-		if err := sim.SetMark(instID, str2dec(p["markPx"])); err != nil {
+		if err := sim.SetMarkPx(instID, str2dec(p["markPx"])); err != nil {
 			return err
 		}
 		if px := str2dec(p["last"]); px.IsPositive() {
-			if err := sim.SetLast(instID, px); err != nil {
+			if err := sim.SetLastPx(instID, px); err != nil {
 				return err
 			}
 		}

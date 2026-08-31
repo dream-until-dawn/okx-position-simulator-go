@@ -101,7 +101,7 @@ func TestInverseAgainstRealAccount(t *testing.T) {
 				if err := s.SetPosition(pos); err != nil {
 					t.Fatalf("置入仓位失败: %v", err)
 				}
-				s.SetMark(pos.InstID, dec(fieldOf(t, p, "markPx")))
+				s.SetMarkPx(pos.InstID, dec(fieldOf(t, p, "markPx")))
 			}
 
 			for _, p := range sm.Positions {
@@ -128,7 +128,7 @@ func TestInverseAgainstRealAccount(t *testing.T) {
 				}
 			}
 
-			b, err := s.Balance("BTC")
+			b, err := s.BalanceOf("BTC")
 			if err != nil {
 				t.Fatalf("查询余额失败: %v", err)
 			}
@@ -207,7 +207,7 @@ func TestInverseShortLossIsBounded(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		s.SetMark("BTC-USD-SWAP", avgPx)
+		s.SetMarkPx("BTC-USD-SWAP", avgPx)
 		m, err := s.MetricsOf("BTC-USD-SWAP", types.PosShort)
 		if err != nil {
 			t.Fatal(err)
@@ -254,7 +254,7 @@ func TestCrossFundingChargesCash(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("置入仓位失败: %v", err)
 	}
-	s.SetMark("ETH-USDT-SWAP", dec("2400"))
+	s.SetMarkPx("ETH-USDT-SWAP", dec("2400"))
 
 	before := s.CashBal("USDT")
 	rs, err := s.SettleFunding("ETH-USDT-SWAP", Funding{Rate: dec("0.0001")}, 1)

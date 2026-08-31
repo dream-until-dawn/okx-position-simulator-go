@@ -47,13 +47,17 @@ type Metrics struct {
 	HasPosition bool
 }
 
-// ComputeMetrics 计算逐仓仓位在给定标记价下的风险指标。
+// computeMetrics 计算一个仓位在给定标记价下的风险指标。
+//
+// 不导出：它的入参要求调用方自己备好 refdata.Instrument 与 refdata.PositionTier，
+// 那是本库的内部形状；而这个签名在开发期已经改过两次。导出它等于在 v1.0 把一个
+// 内部形状永久冻结，换来的能力 MetricsOf 已经提供了。
 //
 // takerRate 传入费率表中的吃单费率，其符号沿用 OKX 约定（负数表示收取），
 // 本函数内部取绝对值参与计算。
 //
 // 空仓返回零值。
-func ComputeMetrics(pos Position, inst refdata.Instrument, tier refdata.PositionTier,
+func computeMetrics(pos Position, inst refdata.Instrument, tier refdata.PositionTier,
 	markPx, takerRate decimal.Decimal) Metrics {
 
 	m := Metrics{MarkPx: markPx, MMRRate: tier.MMR, Tier: tier.Tier}

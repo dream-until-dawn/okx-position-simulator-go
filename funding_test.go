@@ -96,7 +96,7 @@ func TestFundingDeductsFromMarginNotCash(t *testing.T) {
 func TestFundingAffectsLiqPx(t *testing.T) {
 	s := newSim(t, types.NetMode)
 	mustFill(t, s, netFill(types.Buy, "10", "78000"))
-	if err := s.SetMark("BTC-USDT-SWAP", dec("78000")); err != nil {
+	if err := s.SetMarkPx("BTC-USDT-SWAP", dec("78000")); err != nil {
 		t.Fatal(err)
 	}
 

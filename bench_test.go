@@ -96,7 +96,7 @@ func BenchmarkFillOpenClose(b *testing.B) {
 func BenchmarkMetricsOf(b *testing.B) {
 	s := benchSim(b, types.NetMode)
 	mustBenchFill(b, s, "BTC-USDT-SWAP", types.TdIsolated, "4", "78000")
-	if err := s.SetMark("BTC-USDT-SWAP", decimal.NewFromInt(77000)); err != nil {
+	if err := s.SetMarkPx("BTC-USDT-SWAP", decimal.NewFromInt(77000)); err != nil {
 		b.Fatal(err)
 	}
 	b.ReportAllocs()
@@ -144,7 +144,7 @@ func BenchmarkBalanceByPositions(b *testing.B) {
 				b.ReportAllocs()
 				b.ResetTimer()
 				for i := 0; i < b.N; i++ {
-					if _, err := s.Balance("USDT"); err != nil {
+					if _, err := s.BalanceOf("USDT"); err != nil {
 						b.Fatal(err)
 					}
 				}

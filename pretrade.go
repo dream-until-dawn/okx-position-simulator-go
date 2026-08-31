@@ -163,7 +163,7 @@ func (s *Simulator) MaxSize(instID string, tdMode types.TdMode, px decimal.Decim
 	if err != nil {
 		return MaxSize{}, err
 	}
-	bal, err := s.Balance(inst.SettleCcy)
+	bal, err := s.BalanceOf(inst.SettleCcy)
 	if err != nil {
 		return MaxSize{}, err
 	}
@@ -364,14 +364,31 @@ func (s *Simulator) CancelOrder(ordID string) error {
 	return nil
 }
 
-// PendingOrders 返回全部挂单，按委托 ID 排序。
-func (s *Simulator) PendingOrders() []PendingOrder {
+// PendingOrders 返回尚未成交的委托，instID 为空则返回全部。
+//
+// 按下单先后排序，同一时刻的按委托 ID——这与撮合的处理顺序一致，使遍历结果
+// 与成交顺序对得上，也使输出可复现。
+func (s *Simulator) PendingOrders(instID string) []PendingOrder {
 	out := make([]PendingOrder, 0, len(s.pending))
 	for _, o := range s.pending {
+		if instID != "" && o.Order.InstID != instID {
+			continue
+		}
 		out = append(out, o)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].OrdID < out[j].OrdID })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Order.Ts != out[j].Order.Ts {
+			return out[i].Order.Ts < out[j].Order.Ts
+		}
+		return out[i].OrdID < out[j].OrdID
+	})
 	return out
+}
+
+// PendingOrderOf 按委托 ID 取一笔挂单；不存在时第二个返回值为 false。
+func (s *Simulator) PendingOrderOf(ordID string) (PendingOrder, bool) {
+	o, ok := s.pending[ordID]
+	return o, ok
 }
 
 // orderFreeze 汇总某币种上全部挂单的冻结，分别返回保证金部分与手续费部分。

@@ -40,7 +40,7 @@ func TestLimitOrderRestsThenFillsAsMaker(t *testing.T) {
 	if pr.State != types.OrdLive {
 		t.Fatalf("委托状态 = %q，期望挂住", pr.State)
 	}
-	if len(s.OpenOrders("BTC-USDT-SWAP")) != 1 {
+	if len(s.PendingOrders("BTC-USDT-SWAP")) != 1 {
 		t.Fatal("委托未挂入簿中")
 	}
 
@@ -64,10 +64,10 @@ func TestLimitOrderRestsThenFillsAsMaker(t *testing.T) {
 	eq(t, fr.After.Pos, "4", "成交后持仓")
 
 	// 冻结应已自动解除
-	if len(s.OpenOrders("BTC-USDT-SWAP")) != 0 {
+	if len(s.PendingOrders("BTC-USDT-SWAP")) != 0 {
 		t.Error("成交后委托应从簿中移除")
 	}
-	b, err := s.Balance("USDT")
+	b, err := s.BalanceOf("USDT")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestMarketableLimitFillsAsTaker(t *testing.T) {
 	eq(t, fr.After.AvgPx, "78000", "应以最新价成交，优于限价")
 	// 0.01×4×78000 = 3120，taker -0.0005 -> -1.56
 	eq(t, fr.Fee, "-1.56", "立即成交应按 taker 费率")
-	if len(s.OpenOrders("BTC-USDT-SWAP")) != 0 {
+	if len(s.PendingOrders("BTC-USDT-SWAP")) != 0 {
 		t.Error("立即成交的委托不应留在簿中")
 	}
 }
@@ -138,7 +138,7 @@ func TestPostOnlyCanceledWhenMarketable(t *testing.T) {
 	if len(pr.Fills) != 0 {
 		t.Error("只挂单委托不应产生成交")
 	}
-	if len(s.OpenOrders("")) != 0 {
+	if len(s.PendingOrders("")) != 0 {
 		t.Error("被撤销的委托不应留在簿中")
 	}
 
@@ -170,7 +170,7 @@ func TestImmediateOrdersDoNotRest(t *testing.T) {
 			t.Errorf("%s 无法立即成交时应被撤销，实际 %q", ot, pr.State)
 		}
 	}
-	if len(s.OpenOrders("")) != 0 {
+	if len(s.PendingOrders("")) != 0 {
 		t.Error("立即成交类委托不应挂入簿中")
 	}
 }
@@ -240,7 +240,7 @@ func TestManualFillWithOrdIDReleasesFreeze(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before, err := s.Balance("USDT")
+	before, err := s.BalanceOf("USDT")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,14 +257,14 @@ func TestManualFillWithOrdIDReleasesFreeze(t *testing.T) {
 		t.Fatalf("手工成交失败: %v", err)
 	}
 
-	after, err := s.Balance("USDT")
+	after, err := s.BalanceOf("USDT")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !after.OrdFrozen.IsZero() {
 		t.Errorf("带 OrdID 的成交应解除冻结，实际仍有 %s", after.OrdFrozen)
 	}
-	if len(s.OpenOrders("")) != 0 {
+	if len(s.PendingOrders("")) != 0 {
 		t.Error("成交后委托应从簿中移除")
 	}
 	_ = pr
@@ -284,7 +284,7 @@ func TestFillBalanceCheckUsesAvailable(t *testing.T) {
 	if err := s.Deposit("USDT", dec("2000")); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetLast("BTC-USDT-SWAP", dec("78000")); err != nil {
+	if err := s.SetLastPx("BTC-USDT-SWAP", dec("78000")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -346,7 +346,7 @@ func TestCancelOrderReleasesFreeze(t *testing.T) {
 	s := newSim(t, types.NetMode)
 	mustAdvance(t, s, bar("78000", "78000", "78000", 1))
 
-	before, err := s.Balance("USDT")
+	before, err := s.BalanceOf("USDT")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +356,7 @@ func TestCancelOrderReleasesFreeze(t *testing.T) {
 	if err := s.CancelOrder("o1"); err != nil {
 		t.Fatalf("撤单失败: %v", err)
 	}
-	after, err := s.Balance("USDT")
+	after, err := s.BalanceOf("USDT")
 	if err != nil {
 		t.Fatal(err)
 	}
