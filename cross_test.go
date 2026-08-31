@@ -594,7 +594,13 @@ func TestCrossLiquidationClosesWholeCurrency(t *testing.T) {
 // 容差取 1%：标记价与 max-size 是两次调用，其间有 0.1~0.9 的漂移，而用错公式时
 // 差的是 300%，1% 足以区分。
 func TestMaxSizeAgainstRealAccount(t *testing.T) {
-	b, err := os.ReadFile(filepath.Join("testdata", "conformance", "max-size.json"))
+	for _, name := range []string{"max-size.json", "max-size-inverse.json"} {
+		t.Run(name, func(t *testing.T) { maxSizeConformance(t, name) })
+	}
+}
+
+func maxSizeConformance(t *testing.T, name string) {
+	b, err := os.ReadFile(filepath.Join("testdata", "conformance", name))
 	if err != nil {
 		t.Fatalf("读取夹具失败: %v", err)
 	}
@@ -647,7 +653,8 @@ func TestMaxSizeAgainstRealAccount(t *testing.T) {
 			if err != nil {
 				t.Fatalf("新建模拟器失败: %v", err)
 			}
-			if err := s.Deposit("USDT", dec(sm.AvailBal)); err != nil {
+			// 币本位的结算币是标的币，入金币种要照合约走
+			if err := s.Deposit(inst.SettleCcy, dec(sm.AvailBal)); err != nil {
 				t.Fatalf("入金失败: %v", err)
 			}
 			mgnMode := types.MgnIsolated
