@@ -98,9 +98,9 @@ func run(mode, instID, lever, baseSz, addSz, cutSz, envPath string, settle time.
 		}
 		return runAdjust(ctx, client, instID,
 			decimal.RequireFromString(addSz), decimal.RequireFromString(cutSz), settle)
-	case "trade":
+	case "trade", "margin":
 	default:
-		return fmt.Errorf("未知的模式 %q，应为 trade、check 或 adjust", mode)
+		return fmt.Errorf("未知的模式 %q，应为 trade、check、adjust、margin 或 view", mode)
 	}
 
 	cfg, err := client.Account.Config(ctx)
@@ -145,6 +145,11 @@ func run(mode, instID, lever, baseSz, addSz, cutSz, envPath string, settle time.
 	})
 	if err != nil {
 		return err
+	}
+
+	if mode == "margin" {
+		return runMargin(ctx, client, sim, inst, posMode, posSide,
+			decimal.RequireFromString(baseSz), settle)
 	}
 
 	start, err := readBalance(ctx, client, inst.SettleCcy)
