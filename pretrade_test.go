@@ -15,28 +15,74 @@ func req(side types.Side, sz, px string) OrderReq {
 	}
 }
 
+func limitOrder(ordID string, side types.Side, sz, px string) Order {
+	return Order{
+		OrdID: ordID, InstID: "BTC-USDT-SWAP", TdMode: types.TdIsolated,
+		Side: side, PosSide: types.PosNet, OrdType: types.OrdLimit,
+		Sz: dec(sz), Px: dec(px),
+	}
+}
+
 // TestOrderCostOpen 开仓挂单的冻结 = 张数 × (每张保证金 + 每张 taker 手续费)。
 //
-// 实测：4 张 BTC-USDT-SWAP，挂单价 70339.23，5 倍杠杆，可用余额减少
-// 564.120624600000，与本式差值恰为 0。
+// 实测取自模拟盘：4 张 BTC-USDT-SWAP，挂单价 70339.23，5 倍杠杆，
+// 可用余额减少 564.120624600000，与本式差值恰为 0。
+//
+// 本测试用的是内置快照（取自生产环境，tickSz=0.1），而实测时模拟盘的
+// tickSz 是 0.01——两个环境的规则数据本就不同。70339.23 在生产精度下会被
+// 取整为 70339.2，故期望值按同一公式重算；公式本身未变。
 func TestOrderCostOpen(t *testing.T) {
 	s := newSim(t, types.NetMode)
 
-	c, err := s.OrderCost(req(types.Buy, "4", "70339.23"))
+	c, err := s.OrderCost(req(types.Buy, "4", "70339.2"))
 	if err != nil {
 		t.Fatalf("计算挂单成本失败: %v", err)
 	}
 
-	// 名义价值 0.01×4×70339.23 = 2813.5692
-	eq(t, c.Notional, "2813.5692", "名义价值")
-	eq(t, c.Margin, "562.71384", "冻结保证金")  // /5
-	eq(t, c.Fee, "1.4067846", "预冻结手续费")    // ×0.0005
-	eq(t, c.Frozen, "564.1206246", "合计冻结") // 与实测一致
+	// 名义价值 0.01×4×70339.2 = 2813.568
+	eq(t, c.Notional, "2813.568", "名义价值")
+	eq(t, c.Margin, "562.7136", "冻结保证金") // /5
+	eq(t, c.Fee, "1.406784", "预冻结手续费")   // ×0.0005
+	eq(t, c.Frozen, "564.120384", "合计冻结")
 	eq(t, c.OpenSz, "4", "开仓张数")
 	eq(t, c.CloseSz, "0", "平仓张数")
 	if c.Ccy != "USDT" {
 		t.Errorf("冻结币种 = %q", c.Ccy)
 	}
+
+	// 直接核对实测值：同一公式在模拟盘的 70339.23 上应给出 564.1206246
+	n := dec("0.01").Mul(dec("4")).Mul(dec("70339.23"))
+	got := div(n, dec("5")).Add(n.Mul(dec("0.0005")))
+	eq(t, got, "564.1206246", "同一公式在实测价位上的冻结额")
+}
+
+// TestOrderCostRoundsPrice 报价与下单必须按同一个取整后的价格计算，
+// 否则「按报价刚好挂得起」的委托会在真下单时被拒。
+func TestOrderCostRoundsPrice(t *testing.T) {
+	s := newSim(t, types.NetMode)
+
+	// tickSz=0.1，买单向下取整到 70339.2
+	quoted, err := s.OrderCost(req(types.Buy, "4", "70339.23"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	aligned, err := s.OrderCost(req(types.Buy, "4", "70339.2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, quoted.Frozen, aligned.Frozen.String(), "超精度价格的报价应与取整后一致")
+
+	pr, err := s.PlaceOrder(limitOrder("o1", types.Buy, "4", "70339.23"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, pr.Cost.Frozen, quoted.Frozen.String(), "实际冻结应与报价一致")
+
+	orders := s.OpenOrders("BTC-USDT-SWAP")
+	if len(orders) != 1 {
+		t.Fatalf("挂单数 = %d", len(orders))
+	}
+	eq(t, orders[0].Px, "70339.2", "挂住的委托价应已按 tickSz 取整")
 }
 
 // TestOrderCostUsesTakerRate 预冻结一律按 taker 费率，即便该委托必然作为 maker 成交。
@@ -45,12 +91,12 @@ func TestOrderCostOpen(t *testing.T) {
 func TestOrderCostUsesTakerRate(t *testing.T) {
 	s := newSim(t, types.NetMode)
 
-	c, err := s.OrderCost(req(types.Buy, "4", "70339.23"))
+	c, err := s.OrderCost(req(types.Buy, "4", "70339.2"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// taker 0.0005 -> 1.4067846；若误用 maker 0.0002 会得到 0.56271384
-	eq(t, c.Fee, "1.4067846", "预冻结手续费应按 taker 费率")
+	// taker 0.0005 -> 1.406784；若误用 maker 0.0002 会得到 0.5627136
+	eq(t, c.Fee, "1.406784", "预冻结手续费应按 taker 费率")
 }
 
 // TestOrderCostCloseIsFree 平仓方向的挂单不冻结任何资金，实测确认。
@@ -90,14 +136,14 @@ func TestOrderCostReversalSplitsSize(t *testing.T) {
 func TestOrderCostAffordable(t *testing.T) {
 	s := newSim(t, types.NetMode)
 
-	c, err := s.OrderCost(req(types.Buy, "4", "70339.23"))
+	c, err := s.OrderCost(req(types.Buy, "4", "70339.2"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !c.Affordable(dec("564.1206246")) {
+	if !c.Affordable(dec("564.120384")) {
 		t.Error("恰好等于冻结额时应当挂得起")
 	}
-	if c.Affordable(dec("564.1206245")) {
+	if c.Affordable(dec("564.120383")) {
 		t.Error("差一分钱时不应挂得起")
 	}
 }
@@ -190,11 +236,15 @@ func TestPlaceOrderFreezesFunds(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cost, err := s.PlaceOrder("o1", req(types.Buy, "4", "70339.23"))
+	pr, err := s.PlaceOrder(limitOrder("o1", types.Buy, "4", "70339.2"))
 	if err != nil {
 		t.Fatalf("挂单失败: %v", err)
 	}
-	eq(t, cost.Frozen, "564.1206246", "冻结额")
+	if pr.State != types.OrdLive {
+		t.Errorf("委托状态 = %q，期望挂住", pr.State)
+	}
+	cost := pr.Cost
+	eq(t, cost.Frozen, "564.120384", "冻结额")
 
 	after, err := s.Balance("USDT")
 	if err != nil {
@@ -204,7 +254,7 @@ func TestPlaceOrderFreezesFunds(t *testing.T) {
 	eq(t, after.CashBal, before.CashBal.String(), "挂单不动用现金")
 	eq(t, after.AvailBal, before.AvailBal.Sub(cost.Frozen).String(), "可用余额减少冻结额")
 	// ordFrozen 只是保证金部分，不含手续费——与 OKX 的字段语义一致
-	eq(t, after.OrdFrozen, "562.71384", "ordFrozen 只含保证金")
+	eq(t, after.OrdFrozen, "562.7136", "ordFrozen 只含保证金")
 	eq(t, after.FrozenBal, cost.Frozen.String(), "frozenBal 含保证金与手续费")
 
 	if err := s.CancelOrder("o1"); err != nil {
@@ -231,7 +281,7 @@ func TestMaxSizeAccountsForPendingOrders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.PlaceOrder("o1", req(types.Buy, "4", "70000")); err != nil {
+	if _, err := s.PlaceOrder(limitOrder("o1", types.Buy, "4", "70000")); err != nil {
 		t.Fatal(err)
 	}
 	after, err := s.MaxSize("BTC-USDT-SWAP", types.TdIsolated, dec("70000"))
@@ -256,7 +306,7 @@ func TestPlaceOrderInsufficientBalance(t *testing.T) {
 	if err := s.Deposit("USDT", dec("100")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.PlaceOrder("o1", req(types.Buy, "4", "78000")); !okxerr.HasCode(err, okxerr.CodeInsufficientBal) {
+	if _, err := s.PlaceOrder(limitOrder("o1", types.Buy, "4", "78000")); !okxerr.HasCode(err, okxerr.CodeInsufficientBal) {
 		t.Errorf("余额不足的错误 = %v，期望 51008", err)
 	}
 	if len(s.PendingOrders()) != 0 {
@@ -266,10 +316,10 @@ func TestPlaceOrderInsufficientBalance(t *testing.T) {
 
 func TestPlaceOrderDuplicateID(t *testing.T) {
 	s := newSim(t, types.NetMode)
-	if _, err := s.PlaceOrder("o1", req(types.Buy, "1", "70000")); err != nil {
+	if _, err := s.PlaceOrder(limitOrder("o1", types.Buy, "1", "70000")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.PlaceOrder("o1", req(types.Buy, "1", "70000")); err == nil {
+	if _, err := s.PlaceOrder(limitOrder("o1", types.Buy, "1", "70000")); err == nil {
 		t.Error("重复的委托 ID 应当被拒")
 	}
 	if err := s.CancelOrder("不存在"); err == nil {

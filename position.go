@@ -62,8 +62,14 @@ func (p Position) IsShort() bool { return p.SignedPos().IsNegative() }
 // AbsPos 返回持仓张数的绝对值，用于查档与计算名义价值。
 func (p Position) AbsPos() decimal.Decimal { return p.Pos.Abs() }
 
-// Fill 是一笔成交，由外部撮合产生后灌入模拟器。
+// Fill 是一笔成交。
+//
+// 内置撮合会自行构造它；引擎若有自己的撮合逻辑，也可以直接灌入。
 type Fill struct {
+	// OrdID 是该成交对应的委托 ID。填写后，模拟器会自动解除这笔委托的资金冻结；
+	// 留空则不涉及任何挂单，适用于引擎完全自行管理委托的情形。
+	OrdID string
+
 	InstID   string
 	TdMode   types.TdMode
 	Side     types.Side

@@ -152,3 +152,59 @@ func ExampleSimulator_OrderCost() {
 	// 挂 10 张需冻结 1563.9（保证金 1560 + 手续费 3.9）
 	// 若成交：持仓 10 张，均价 78000，占用保证金 1560
 }
+
+// 内置撮合：一个最小的回测循环。
+func ExampleSimulator_Advance() {
+	sim, err := okxsim.New(okxsim.Config{
+		PosMode: types.NetMode, RefData: refdata.MustEmbedded(), DefaultLever: d("5"),
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := sim.Deposit("USDT", d("10000")); err != nil {
+		log.Fatal(err)
+	}
+
+	// 第一根 K 线：建立价格基准
+	if _, err := sim.Advance(okxsim.Bar{
+		InstID: "BTC-USDT-SWAP", Last: d("78000"),
+		High: d("78200"), Low: d("77800"), Ts: 1,
+	}); err != nil {
+		log.Fatal(err)
+	}
+
+	// 策略挂一笔低于市价的限价买单
+	pr, err := sim.PlaceOrder(okxsim.Order{
+		OrdID: "o1", InstID: "BTC-USDT-SWAP", TdMode: types.TdIsolated,
+		Side: types.Buy, PosSide: types.PosNet, OrdType: types.OrdLimit,
+		Sz: d("4"), Px: d("77000"), Ts: 1,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("委托状态 %s，冻结 %s\n", pr.State, pr.Cost.Frozen)
+
+	// 下一根 K 线的最低价触及委托价，成交
+	step, err := sim.Advance(okxsim.Bar{
+		InstID: "BTC-USDT-SWAP", Last: d("77200"),
+		High: d("78100"), Low: d("76800"), Ts: 2,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, f := range step.Fills {
+		fmt.Printf("成交 %s 张 @ %s，手续费 %s（挂单成交按 maker 计费）\n",
+			f.OpenedSz, f.After.AvgPx, f.Fee)
+	}
+
+	b, err := sim.Balance("USDT")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("持仓建立，冻结已释放：ordFrozen=%s\n", b.OrdFrozen)
+
+	// Output:
+	// 委托状态 live，冻结 617.54
+	// 成交 4 张 @ 77000，手续费 -0.616（挂单成交按 maker 计费）
+	// 持仓建立，冻结已释放：ordFrozen=0
+}

@@ -152,3 +152,39 @@ const (
 func (o MarginOp) String() string { return string(o) }
 
 func (o MarginOp) Valid() bool { return o == MarginAdd || o == MarginReduce }
+
+// OrdState 委托状态，取值与 OKX 的 state 字段一致。
+type OrdState string
+
+const (
+	OrdLive            OrdState = "live"             // 等待成交
+	OrdPartiallyFilled OrdState = "partially_filled" // 部分成交
+	OrdFilled          OrdState = "filled"           // 完全成交
+	OrdCanceled        OrdState = "canceled"         // 已撤销
+)
+
+func (s OrdState) String() string { return string(s) }
+
+func (s OrdState) Valid() bool {
+	switch s {
+	case OrdLive, OrdPartiallyFilled, OrdFilled, OrdCanceled:
+		return true
+	}
+	return false
+}
+
+// IsOpen 报告该状态下委托是否仍在簿上等待成交。
+func (s OrdState) IsOpen() bool { return s == OrdLive || s == OrdPartiallyFilled }
+
+// IsMarketable 报告该委托类型是否总是立即成交，不会挂在簿上。
+func (t OrdType) IsMarketable() bool {
+	return t == OrdMarket || t == OrdOptimalLimitIOC
+}
+
+// IsPostOnly 报告该委托类型是否只允许作为挂单方成交。
+func (t OrdType) IsPostOnly() bool { return t == OrdPostOnly }
+
+// IsImmediate 报告该委托类型是否要求立即成交，未成交的部分不挂在簿上。
+func (t OrdType) IsImmediate() bool {
+	return t == OrdMarket || t == OrdIOC || t == OrdFOK || t == OrdOptimalLimitIOC
+}

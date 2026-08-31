@@ -24,12 +24,11 @@ Go 库特有约束：
 |---|---|---|---|
 | `v0.1.0` ✅ | **地基**：types 枚举、okxerr 错误体系、refdata（Instrument / TierTable / **按 instFamily 聚合的查档** / 取整校验 / 费率表与用户覆盖 / Provider 抽象 / 快照持久化 / go:embed 内置快照）、refdata/live（**定期自动拉取与规则变更检测**）、cmd/refdata-sync | 已达成 | 4 |
 | `v0.2.0` ✅ | **USDT永续 · 逐仓**：Simulator 门面、出入金、Fill 处理（开/平/加/减仓、**反手**、均价、已实现盈亏）、手续费、uPL/IMR/MMR/mgnRatio/liqPx/bkPx、逐仓保证金增减、OKX 形态视图 | 已达成：对拍 66 字段全部一致 | 5 |
-| `v0.3.0` | **预下单计算与挂单冻结**：OrderCost（挂单需冻结多少）、MaxSize（可开张数）、PreviewFill（成交预演）、挂单登记与 ordFrozen | 与 OKX 的 max-size 及冻结额一致 | 3 |
+| `v0.3.0` | **预下单计算与内置撮合**：OrderCost / MaxSize / PreviewFill、挂单冻结与 ordFrozen、PlaceOrder / CancelOrder / Advance、成交角色自动判定 | 与 OKX 的 max-size 及冻结额一致；撮合的成交角色与费率正确 | 5 |
 | `v0.4.0` | **全仓(cross)**：双向持仓模型、账户级权益/adjEq/可用保证金/ordFroz、instFamily 跨合约合并查档、全仓 mgnRatio（按 settleCcy 分币种） | 全仓账户级风险指标与模拟盘一致 | 5 |
 | `v0.4.0` | **时钟 + 资金费 + 强平引擎**：`Advance(ts)`、资金费结算（周期从 fundingTime 读）、`撤单 → 阶梯减仓(降档重算) → 全平 → 穿仓`、事件体系 | 强平序列可复现；构造大仓位验证「降档救仓」路径 | 6 |
 | `v0.5.0` | **币本位(inverse)永续**：inverse 全线公式（uPL/IMR/liqPx/资金费）、settleCcy=BTC 的账户模型 | inverse 与模拟盘对拍一致 | 3 |
 | `v0.6.0` | **订单层**：limit/market/post_only/fok/ioc、reduceOnly、closePosition、TP/SL、算法单、ordFroz 精确化 | 下单/撤单/部分成交路径完整 | 4 |
-| `v0.7.0` | **matching 子包**：可选简易撮合器，限价/市价撮合 + 滑点模型，与内核完全解耦 | 可零配置跑通一个端到端回测示例 | 2 |
 | `v0.8.0` | **对拍加固与差异清零**：`cmd/conformance` 全面化、`refdata/live` 子包、修复对拍暴露的全部差异、性能基准 | 全字段 diff 无差异或差异有明确说明 | 5 |
 | `v0.9.0` | **API 打磨**：命名/签名定型、向后兼容审查、文档、示例、README | API 冻结评审通过 | 2 |
 | `v1.0.0` | **冻结**：tag 打在 main | — | 1 |

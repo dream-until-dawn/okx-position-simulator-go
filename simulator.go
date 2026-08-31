@@ -53,6 +53,7 @@ type Simulator struct {
 	cash    map[string]decimal.Decimal
 	pos     map[positionKey]Position
 	marks   map[string]decimal.Decimal
+	last    map[string]decimal.Decimal
 	lever   map[leverageKey]decimal.Decimal
 	pending map[string]PendingOrder
 }
@@ -89,6 +90,7 @@ func New(cfg Config) (*Simulator, error) {
 		cash:    make(map[string]decimal.Decimal),
 		pos:     make(map[positionKey]Position),
 		marks:   make(map[string]decimal.Decimal),
+		last:    make(map[string]decimal.Decimal),
 		lever:   make(map[leverageKey]decimal.Decimal),
 		pending: make(map[string]PendingOrder),
 	}, nil
@@ -267,10 +269,22 @@ func (s *Simulator) Fill(f Fill) (FillResult, error) {
 	md := computeMarginDelta(res, openNotional, pos.Lever)
 
 	delta := res.Pnl.Add(res.Fee).Sub(md.Net())
-	if s.cash[inst.SettleCcy].Add(delta).IsNegative() {
+
+	// 约束是可用余额而非现金余额：被其他挂单冻结的部分已有归属，不能再拿来
+	// 支撑这笔成交。该委托自身的冻结要排除在外——它正在转化为本次成交的保证金，
+	// 若把它也算作占用，一笔本该成功的成交会被自己的冻结挡下。
+	avail := s.cash[inst.SettleCcy]
+	ordMargin, ordFee := s.orderFreeze(inst.SettleCcy)
+	avail = avail.Sub(ordMargin).Sub(ordFee)
+	if f.OrdID != "" {
+		if p, ok := s.pending[f.OrdID]; ok {
+			avail = avail.Add(p.Cost.Frozen)
+		}
+	}
+	if avail.Add(delta).IsNegative() {
 		return FillResult{}, okxerr.New(okxerr.CodeInsufficientBal,
-			"%s 现金余额 %s 不足以支撑本次成交（需 %s）",
-			inst.SettleCcy, s.cash[inst.SettleCcy], delta.Neg())
+			"%s 可用余额 %s 不足以支撑本次成交（需 %s）",
+			inst.SettleCcy, avail, delta.Neg())
 	}
 
 	after := res.After
@@ -280,6 +294,12 @@ func (s *Simulator) Fill(f Fill) (FillResult, error) {
 		after.Margin = decimal.Zero
 	}
 	res.After = after
+
+	// 校验通过后再解除冻结。顺序很重要：早于校验会让「其他挂单占用了多少」
+	// 算错，晚于落账则会在中途失败时留下已消费却仍冻结的资金。
+	if f.OrdID != "" {
+		delete(s.pending, f.OrdID)
+	}
 
 	s.cash[inst.SettleCcy] = s.cash[inst.SettleCcy].Add(delta)
 	if after.IsEmpty() {

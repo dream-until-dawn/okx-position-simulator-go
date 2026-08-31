@@ -81,6 +81,11 @@ func (s *Simulator) OrderCost(req OrderReq) (OrderCost, error) {
 		return OrderCost{}, err
 	}
 
+	// 与 PlaceOrder 一致地取整。若此处按原价报冻结额、下单时却按取整价扣，
+	// 引擎拿到的报价就与实际不符——差额虽小，但会让「按报价刚好挂得起」的
+	// 委托在真下单时被拒。
+	req.Px = inst.RoundPrice(req.Px, req.Side)
+
 	c := OrderCost{Ccy: inst.SettleCcy, Lever: s.Leverage(req.InstID, mgnMode, side)}
 	if pos, ok := s.pos[positionKey{req.InstID, side}]; ok {
 		c.Lever = pos.Lever
@@ -255,41 +260,15 @@ func (s *Simulator) PreviewFill(f Fill) (FillResult, error) {
 // PendingOrder 是一笔已挂出、尚未成交的委托及其冻结明细。
 type PendingOrder struct {
 	OrdID string
+	Order Order
 	Req   OrderReq
 	Cost  OrderCost
 }
 
-// PlaceOrder 登记一笔挂单并冻结相应资金，可用余额随之减少。
+// CancelOrder 撤销挂单并释放其冻结。
 //
-// 模拟器不做撮合——何时成交由使用者的回测引擎判定，成交时调用 Fill 并用
-// CancelOrder 解除冻结。本方法的意义在于让 Balance 与 MaxSize 在有未成交委托时
-// 仍然正确：OKX 的可开张数会扣掉已冻结的部分，实测挂单后 maxBuy 从 33.76 降到 29.76。
-//
-// 可用余额不足时返回错误码 51008，与 OKX 一致。
-func (s *Simulator) PlaceOrder(ordID string, req OrderReq) (OrderCost, error) {
-	if ordID == "" {
-		return OrderCost{}, okxerr.New(okxerr.CodeParamEmpty, "ordId 不能为空")
-	}
-	if _, dup := s.pending[ordID]; dup {
-		return OrderCost{}, okxerr.New(okxerr.CodeParamError, "ordId %q 已存在", ordID)
-	}
-	cost, err := s.OrderCost(req)
-	if err != nil {
-		return OrderCost{}, err
-	}
-	bal, err := s.Balance(cost.Ccy)
-	if err != nil {
-		return OrderCost{}, err
-	}
-	if !cost.Affordable(bal.AvailBal) {
-		return OrderCost{}, okxerr.New(okxerr.CodeInsufficientBal,
-			"%s 可用余额 %s 不足以挂出该委托（需冻结 %s）", cost.Ccy, bal.AvailBal, cost.Frozen)
-	}
-	s.pending[ordID] = PendingOrder{OrdID: ordID, Req: req, Cost: cost}
-	return cost, nil
-}
-
-// CancelOrder 撤销挂单并释放其冻结。委托成交后同样应当调用它来解除冻结。
+// 经内置撮合成交的委托会自动解除冻结，无需调用本方法；只有引擎自行撮合、
+// 手工灌 Fill 时才需要——或者在 Fill 里带上 OrdID 让模拟器代劳。
 func (s *Simulator) CancelOrder(ordID string) error {
 	if _, ok := s.pending[ordID]; !ok {
 		return okxerr.New(okxerr.CodeParamError, "找不到挂单 %q", ordID)
