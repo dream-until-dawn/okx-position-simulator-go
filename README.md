@@ -5,10 +5,10 @@
 
 一句话概括职责：**「行情与成交 → 仓位/账户状态」的记账机。**
 
-> **状态：v0.6.0。**
+> **状态：v0.7.0。**
 > 已可用：**正向与币本位** × **逐仓与全仓**四个象限的完整核算（开平加减仓与反手、
-> 盈亏、手续费、全套风险指标）、内置撮合、预下单计算与挂单冻结、资金费结算、强平。
-> 算法单在后续版本，详见 [版本排期](docs/roadmap.md)。
+> 盈亏、手续费、全套风险指标）、内置撮合、**算法委托**、预下单计算与挂单冻结、
+> 资金费结算、强平。剩余排期见 [版本排期](docs/roadmap.md)。
 
 ## 安装
 
@@ -113,6 +113,43 @@ step.Canceled      // 本步被撤销的委托及其原因
 
 `SetMark` 只更新价格、不触发任何风控——这样多个合约在同一时刻的更新顺序就不会
 影响结果。
+
+### 算法委托
+
+计划委托、止盈止损、OCO、移动止盈止损，接在 `Advance` 里：
+
+```go
+sim.PlaceAlgoOrder(okxsim.AlgoOrder{
+    AlgoID: "sl-1", InstID: "BTC-USDT-SWAP", TdMode: types.TdIsolated,
+    Side: types.Sell, PosSide: types.PosLong, OrdType: types.AlgoMoveStop,
+    Sz: d("2"), ReduceOnly: true, CallbackRatio: d("0.05"),   // 5% 移动止损
+})
+
+for _, a := range step.AlgoTriggers {
+    log.Println(a)     // 算法委托 sl-1（BTC-USDT-SWAP move_order_stop）移动止损 于 76000 触发，当场成交
+    a.Leg              // trigger / tp / sl / move
+    a.Fill             // 当场成交的结果；转成限价挂单时为 nil
+    a.Reason           // 触发了却下不出单时说明原因（资金不足、缺指数价…）
+}
+```
+
+**算法委托不占用任何资金**——不进订单簿、不冻结保证金、不计入 imr/mmr。实测挂四张
+计划委托，`availBal`/`ordFrozen`/`imr`/`mmr` 全部纹丝不动。触发后才生成一笔**普通
+委托**，随后走与手工下单完全相同的路径。
+
+| 类型 | 说明 |
+|---|---|
+| `trigger` | 计划委托 |
+| `conditional` | 止盈止损，**只认一条腿**（与 OKX 一致：同时给两组参数只保留止损） |
+| `oco` | 双腿，任一触发则整笔作废 |
+| `move_order_stop` | 移动止损，触发价跟极值棘轮、只进不退 |
+
+触发价类型 `last` / `index` / `mark` 都支持。用 `index` 时须在 `Bar.IdxPx` 给出指数
+价——本库**不拿别的价格顶替**，缺了就在 `Reason` 里说明，而不是悄悄跳过。
+
+> ⚠️ 一根 K 线只给区间不给路径。`last` 用 `[Low, High]` 整段判，`mark`/`index`
+> 只有单点值、分辨率更粗。移动止损**先按本步的有利极值棘轮再判触发**，等于假定
+> 有利的那一段先发生——这是个明确的取舍，方向上偏保守（止损触发得更频繁）。
 
 ### 内置撮合
 
