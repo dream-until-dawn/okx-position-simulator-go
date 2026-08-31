@@ -57,6 +57,7 @@
   cross.go               全仓：合并查档、币种级权益与保证金率、全仓强平价
   simulator.go           门面：出入金、杠杆、行情、成交、查询、按状态恢复
   matching.go            内置撮合：委托、行情推进、成交角色判定
+  algo.go                算法委托：计划委托、止盈止损、OCO、移动止损
   pretrade.go            预下单计算：冻结额、可开张数、成交预演
   funding.go             资金费结算
   liquidation.go         强平：逐仓仓位级、全仓结算币种级

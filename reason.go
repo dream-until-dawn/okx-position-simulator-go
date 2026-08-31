@@ -158,8 +158,8 @@ func (l Liquidation) String() string {
 //
 // 一步之内可能同时发生资金费结算、成交、撤单与强平，散落在各个字段里不便查看。
 func (r StepResult) Describe() string {
-	if len(r.Fundings) == 0 && len(r.Fills) == 0 &&
-		len(r.Liquidations) == 0 && len(r.Canceled) == 0 {
+	if len(r.Fundings) == 0 && len(r.Fills) == 0 && len(r.Liquidations) == 0 &&
+		len(r.Canceled) == 0 && len(r.AlgoTriggers) == 0 {
 		return fmt.Sprintf("第 %d 步：无事发生", r.Ts)
 	}
 	s := fmt.Sprintf("第 %d 步：", r.Ts)
@@ -169,6 +169,11 @@ func (r StepResult) Describe() string {
 			s += fmt.Sprintf("\n    %s %s 费率 %s，金额 %s",
 				f.InstID, f.PosSide, f.Rate, f.Amount)
 		}
+	}
+	// 算法单的触发排在成交之前列出，与它在 Advance 里的位置一致——
+	// 先有触发，才有那笔成交。
+	for _, a := range r.AlgoTriggers {
+		s += "\n  " + a.String()
 	}
 	if len(r.Fills) > 0 {
 		s += fmt.Sprintf("\n  成交 %d 笔", len(r.Fills))
@@ -184,4 +189,39 @@ func (r StepResult) Describe() string {
 		s += "\n  " + c.String()
 	}
 	return s
+}
+
+// legName 把内部的腿标识译成中文。
+func legName(leg string) string {
+	switch leg {
+	case "trigger":
+		return "计划委托"
+	case "tp":
+		return "止盈"
+	case "sl":
+		return "止损"
+	case "move":
+		return "移动止损"
+	}
+	return leg
+}
+
+// String 描述一次算法委托的触发。
+//
+// 触发本身与触发之后下单成不成功是两件事：价格确实到了，但资金可能不够。
+// 两者混为一谈会让使用者以为「没触发」，实际是触发了却下不出单。
+func (t AlgoTrigger) String() string {
+	if t.Leg == "" && t.Reason != "" {
+		return fmt.Sprintf("算法委托 %s（%s）本步无从判断：%s", t.AlgoID, t.InstID, t.Reason)
+	}
+	head := fmt.Sprintf("算法委托 %s（%s %s）%s 于 %s 触发",
+		t.AlgoID, t.InstID, t.OrdType, legName(t.Leg), t.Px)
+	if t.Reason != "" {
+		return head + "，但下单失败：" + t.Reason
+	}
+	if t.Fill != nil {
+		return fmt.Sprintf("%s，当场成交（开 %s 张 / 平 %s 张，盈亏 %s）",
+			head, t.Fill.OpenedSz, t.Fill.ClosedSz, t.Fill.Pnl)
+	}
+	return head + "，已转为限价委托 " + t.OrdID
 }

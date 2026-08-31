@@ -56,6 +56,8 @@ type Simulator struct {
 	last    map[string]decimal.Decimal
 	lever   map[leverageKey]decimal.Decimal
 	pending map[string]PendingOrder
+	algos   map[string]pendingAlgo
+	index   map[string]decimal.Decimal
 }
 
 // New 新建模拟器。RefData 为必填。
@@ -93,6 +95,8 @@ func New(cfg Config) (*Simulator, error) {
 		last:    make(map[string]decimal.Decimal),
 		lever:   make(map[leverageKey]decimal.Decimal),
 		pending: make(map[string]PendingOrder),
+		algos:   make(map[string]pendingAlgo),
+		index:   make(map[string]decimal.Decimal),
 	}, nil
 }
 

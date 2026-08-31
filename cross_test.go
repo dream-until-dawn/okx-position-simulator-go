@@ -204,7 +204,7 @@ func TestCrossAgainstRealAccount(t *testing.T) {
 
 				// 保证金率的分母含各仓位的平仓手续费。挂单也进 mmr，但它没有可平的
 				// 仓位，故不产生平仓手续费——这一项的取舍在末个快照上有 2e-4 的
-				// 相对残差，与该快照上余额与持仓不同瞬时的表现一致，见 §11。
+				// 相对残差，与该快照上余额与持仓不同瞬时的表现一致，见 §12。
 				closeFee := mmr.Div(dec(sampleMMRRate(t, sample.Positions, fx))).Mul(dec(taker))
 				if den := mmr.Add(closeFee); !den.IsZero() {
 					want := cash.Add(crossUpl).Div(den)
