@@ -104,7 +104,7 @@ func runMargin(ctx context.Context, client *okx.Client, sim *okxsim.Simulator,
 			return err
 		}
 		fmt.Printf("    OKX margin=%s  本库 margin=%s\n", p.Margin, mustPos(sim, inst.InstID, posSide).Margin)
-		if err := sim.SetMark(inst.InstID, num(p.MarkPx)); err != nil {
+		if err := sim.SetMarkPx(inst.InstID, num(p.MarkPx)); err != nil {
 			return err
 		}
 		simPos, _ := sim.PositionOf(inst.InstID, posSide)

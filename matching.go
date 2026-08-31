@@ -123,10 +123,10 @@ type StepResult struct {
 // LastPx 返回某合约当前的最新成交价；未推进过行情则返回零值。
 func (s *Simulator) LastPx(instID string) decimal.Decimal { return s.last[instID] }
 
-// SetLast 设置最新成交价，供下单时判断委托是否立即可成交。
+// SetLastPx 设置最新成交价，供下单时判断委托是否立即可成交。
 //
 // Advance 会自动更新它；只有在不使用内置撮合、却仍想下市价单时才需要手工设置。
-func (s *Simulator) SetLast(instID string, px decimal.Decimal) error {
+func (s *Simulator) SetLastPx(instID string, px decimal.Decimal) error {
 	if !px.IsPositive() {
 		return okxerr.New(okxerr.CodeParamError, "最新价须为正数，实为 %s", px)
 	}
@@ -249,7 +249,7 @@ func (s *Simulator) PlaceOrder(o Order) (PlaceResult, error) {
 		// 立即成交类委托无法成交时直接撤销，不挂入簿中
 		detail := fmt.Sprintf("委托价 %s 相对最新价 %s 无法成交", o.Px, last)
 		if !last.IsPositive() {
-			detail = "尚无最新价，无从判断能否成交——请先经 Advance 推进行情或调用 SetLast"
+			detail = "尚无最新价，无从判断能否成交——请先经 Advance 推进行情或调用 SetLastPx"
 		}
 		return PlaceResult{
 			OrdID: o.OrdID, State: types.OrdCanceled,
@@ -290,7 +290,7 @@ func (s *Simulator) freezeOrder(o Order) (OrderCost, error) {
 	if err != nil {
 		return OrderCost{}, err
 	}
-	bal, err := s.Balance(cost.Ccy)
+	bal, err := s.BalanceOf(cost.Ccy)
 	if err != nil {
 		return OrderCost{}, err
 	}
@@ -352,7 +352,7 @@ func (s *Simulator) Advance(b Bar) (StepResult, error) {
 	algoHits := s.detectAlgoTriggers(b)
 
 	s.last[b.InstID] = b.Last
-	if err := s.SetMark(b.InstID, b.markPx()); err != nil {
+	if err := s.SetMarkPx(b.InstID, b.markPx()); err != nil {
 		return StepResult{}, err
 	}
 	if b.IdxPx.IsPositive() {
@@ -437,24 +437,6 @@ func (s *Simulator) triggeredOrders(b Bar) []Order {
 		if o.Side == types.Sell && b.High.GreaterThanOrEqual(o.Px) {
 			out = append(out, o)
 		}
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Ts != out[j].Ts {
-			return out[i].Ts < out[j].Ts
-		}
-		return out[i].OrdID < out[j].OrdID
-	})
-	return out
-}
-
-// OpenOrders 返回某合约上尚未成交的委托，按下单先后排序；instID 为空则返回全部。
-func (s *Simulator) OpenOrders(instID string) []Order {
-	var out []Order
-	for _, p := range s.pending {
-		if instID != "" && p.Order.InstID != instID {
-			continue
-		}
-		out = append(out, p.Order)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Ts != out[j].Ts {

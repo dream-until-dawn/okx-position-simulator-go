@@ -256,7 +256,7 @@ func runStep(ctx context.Context, client *okx.Client, sim *okxsim.Simulator,
 	// 用 OKX 的标记价驱动模拟器，让两侧的浮盈基准一致——
 	// 否则比出来的差异只是取价时刻不同，与公式无关。
 	if okxPos != nil && !num(okxPos.MarkPx).IsZero() {
-		if err := sim.SetMark(inst.InstID, num(okxPos.MarkPx)); err != nil {
+		if err := sim.SetMarkPx(inst.InstID, num(okxPos.MarkPx)); err != nil {
 			return Result{}, err
 		}
 	}
@@ -343,7 +343,7 @@ func isPositionField(name string) bool {
 }
 
 func mustBal(sim *okxsim.Simulator, ccy string) okxsim.Balance {
-	b, err := sim.Balance(ccy)
+	b, err := sim.BalanceOf(ccy)
 	if err != nil {
 		return okxsim.Balance{Ccy: ccy}
 	}

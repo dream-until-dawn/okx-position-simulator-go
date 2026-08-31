@@ -34,7 +34,7 @@ func TestAdjustMarginAdd(t *testing.T) {
 func TestAdjustMarginMakesPositionSafer(t *testing.T) {
 	s := newSim(t, types.NetMode)
 	mustFill(t, s, netFill(types.Buy, "4", "78112.5655"))
-	if err := s.SetMark("BTC-USDT-SWAP", dec("78116.13")); err != nil {
+	if err := s.SetMarkPx("BTC-USDT-SWAP", dec("78116.13")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -124,7 +124,7 @@ func TestAdjustMarginErrors(t *testing.T) {
 func TestPositionViewMatchesOKXShape(t *testing.T) {
 	s := newSim(t, types.NetMode)
 	mustFill(t, s, netFill(types.Buy, "4", "78000"))
-	if err := s.SetMark("BTC-USDT-SWAP", dec("77500")); err != nil {
+	if err := s.SetMarkPx("BTC-USDT-SWAP", dec("77500")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -229,35 +229,6 @@ func TestBalanceViewShape(t *testing.T) {
 	}
 }
 
-// TestMarshalPositionsEnvelope 输出应当是 OKX 的响应信封形态，可直接做文本 diff。
-func TestMarshalPositionsEnvelope(t *testing.T) {
-	s := newSim(t, types.NetMode)
-	mustFill(t, s, netFill(types.Buy, "4", "78000"))
-
-	b, err := s.MarshalPositions()
-	if err != nil {
-		t.Fatalf("序列化失败: %v", err)
-	}
-	var env struct {
-		Code string           `json:"code"`
-		Msg  string           `json:"msg"`
-		Data []map[string]any `json:"data"`
-	}
-	if err := json.Unmarshal(b, &env); err != nil {
-		t.Fatalf("反序列化失败: %v", err)
-	}
-	if env.Code != "0" {
-		t.Errorf("code = %q，期望 0", env.Code)
-	}
-	if len(env.Data) != 1 {
-		t.Errorf("data 长度 = %d，期望 1", len(env.Data))
-	}
-	if env.Data[0]["instId"] != "BTC-USDT-SWAP" {
-		t.Errorf("instId = %v", env.Data[0]["instId"])
-	}
-	t.Logf("%s", b)
-}
-
 func TestInverseViewHasPosCcy(t *testing.T) {
 	s, err := New(Config{
 		PosMode: types.NetMode, RefData: mustEmbedded(t),
@@ -308,7 +279,7 @@ func TestCrossPositionViewFieldShape(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("置入仓位失败: %v", err)
 	}
-	s.SetMark("ETH-USDT-SWAP", dec("2445.25"))
+	s.SetMarkPx("ETH-USDT-SWAP", dec("2445.25"))
 
 	views, err := s.PositionViews()
 	if err != nil {
@@ -390,10 +361,10 @@ func TestUplByLastPx(t *testing.T) {
 	mustFill(t, s, netFill(types.Buy, "4", "78000"))
 
 	// 标记价下跌、最新价上涨：两套应当一亏一赚
-	if err := s.SetMark("BTC-USDT-SWAP", dec("77000")); err != nil {
+	if err := s.SetMarkPx("BTC-USDT-SWAP", dec("77000")); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetLast("BTC-USDT-SWAP", dec("79000")); err != nil {
+	if err := s.SetLastPx("BTC-USDT-SWAP", dec("79000")); err != nil {
 		t.Fatal(err)
 	}
 	m, err := s.MetricsOf("BTC-USDT-SWAP", types.PosNet)
@@ -421,7 +392,7 @@ func TestUplByLastPx(t *testing.T) {
 // TestSetIndexPx 指数价是独立的一条行情，不与最新价、标记价混用。
 func TestSetIndexPx(t *testing.T) {
 	s := newSim(t, types.NetMode)
-	if err := s.SetMark("BTC-USDT-SWAP", dec("77000")); err != nil {
+	if err := s.SetMarkPx("BTC-USDT-SWAP", dec("77000")); err != nil {
 		t.Fatal(err)
 	}
 	if s.IndexPx("BTC-USDT-SWAP").IsPositive() {

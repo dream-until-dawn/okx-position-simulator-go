@@ -136,7 +136,7 @@ func TestCrossAgainstRealAccount(t *testing.T) {
 					}); err != nil {
 						t.Fatalf("置入仓位失败: %v", err)
 					}
-					s.SetMark(instID, dec(fieldOf(t, p, "markPx")))
+					s.SetMarkPx(instID, dec(fieldOf(t, p, "markPx")))
 				}
 
 				ordFee := decimal.Zero
@@ -216,7 +216,7 @@ func TestCrossAgainstRealAccount(t *testing.T) {
 				}
 
 				// ---- 第三层：本库的实现是否满足同一组公式 ----
-				b, err := s.Balance("USDT")
+				b, err := s.BalanceOf("USDT")
 				if err != nil {
 					t.Fatalf("查询余额失败: %v", err)
 				}
@@ -234,7 +234,7 @@ func TestCrossAgainstRealAccount(t *testing.T) {
 						types.PosSide(fieldOf(t, p, "posSide")))
 					sumIMR, sumMMR = sumIMR.Add(m.IMR), sumMMR.Add(m.MMR)
 				}
-				for _, o := range s.PendingOrders() {
+				for _, o := range s.PendingOrders("") {
 					sumIMR = sumIMR.Add(o.Cost.Margin)
 				}
 				near(t, b.IMR, sumIMR, "0.0000001", "本库的 IMR = 各仓位与挂单之和")
@@ -273,7 +273,7 @@ func sampleMMRRate(t *testing.T, positions []map[string]any, fx crossFixture) st
 
 func sumOrderMargin(s *Simulator) decimal.Decimal {
 	var out decimal.Decimal
-	for _, o := range s.PendingOrders() {
+	for _, o := range s.PendingOrders("") {
 		out = out.Add(o.Cost.Margin)
 	}
 	return out
@@ -309,7 +309,7 @@ func TestCrossTierMergesByFamily(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("置入仓位失败: %v", err)
 		}
-		s.SetMark(instID, dec("0.359"))
+		s.SetMarkPx(instID, dec("0.359"))
 	}
 	mmrRate := func(t *testing.T, s *Simulator, instID string, side types.PosSide) decimal.Decimal {
 		t.Helper()
@@ -354,7 +354,7 @@ func TestCrossTierMergesByFamily(t *testing.T) {
 				t.Fatalf("置入仓位失败: %v", err)
 			}
 		}
-		s.SetMark("GRASS-USDT-260911", dec("0.359"))
+		s.SetMarkPx("GRASS-USDT-260911", dec("0.359"))
 		// 逐仓与全仓是两张不同的档位表，此处只断言「没有被合并」——
 		// 合并的话 14000 张会落到比单独查档更高的档位上。
 		single := mmrRate(t, s, "GRASS-USDT-260911", types.PosLong)
@@ -397,7 +397,7 @@ func TestCrossFillLeavesMarginInCash(t *testing.T) {
 	eq(t, r.After.Margin, "0", "全仓仓位不划入保证金")
 	eq(t, s.CashBal("USDT"), "9999.75544", "全仓开仓后现金只少了手续费")
 
-	b, err := s.Balance("USDT")
+	b, err := s.BalanceOf("USDT")
 	if err != nil {
 		t.Fatalf("查询余额失败: %v", err)
 	}
@@ -416,7 +416,7 @@ func TestCrossFillLeavesMarginInCash(t *testing.T) {
 	if _, ok := s.PositionOf("ETH-USDT-SWAP", types.PosLong); ok {
 		t.Error("全平后仓位应被移除")
 	}
-	b, _ = s.Balance("USDT")
+	b, _ = s.BalanceOf("USDT")
 	eq(t, b.IMR, "0", "全平后不再占用初始保证金")
 	eq(t, s.CashBal("USDT"), "9999.51088", "两笔手续费之外现金不应有其他变化")
 }
@@ -552,7 +552,7 @@ func TestCrossLiquidationClosesWholeCurrency(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("置入仓位失败: %v", err)
 		}
-		s.SetMark(inst, dec("0.359"))
+		s.SetMarkPx(inst, dec("0.359"))
 	}
 	// 合计 12000 张，两个合约同属 GRASS-USDT 家族，合并后仍在一档（上限 12500）
 	if cm, _ := s.CrossMetricsOf("USDT"); cm.IsLiquidatable() {
@@ -666,7 +666,7 @@ func maxSizeConformance(t *testing.T, name string) {
 					t.Fatalf("设置杠杆失败: %v", err)
 				}
 			}
-			s.SetMark(inst.InstID, dec(sm.MarkPx))
+			s.SetMarkPx(inst.InstID, dec(sm.MarkPx))
 
 			m, err := s.MaxSize(inst.InstID, types.TdMode(sm.TdMode), dec(sm.Px))
 			if err != nil {
@@ -751,7 +751,7 @@ func TestAvailBalanceAgreesWithBalance(t *testing.T) {
 			if err != nil {
 				t.Fatalf("快路径失败: %v", err)
 			}
-			b, err := s.Balance("USDT")
+			b, err := s.BalanceOf("USDT")
 			if err != nil {
 				t.Fatalf("完整路径失败: %v", err)
 			}
@@ -777,5 +777,5 @@ func putPos(t *testing.T, s *Simulator, instID string, mgn types.MgnMode,
 	if err := s.SetPosition(p); err != nil {
 		t.Fatalf("置入仓位失败: %v", err)
 	}
-	s.SetMark(instID, dec(avgPx))
+	s.SetMarkPx(instID, dec(avgPx))
 }

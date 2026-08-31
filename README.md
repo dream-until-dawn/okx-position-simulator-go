@@ -5,7 +5,7 @@
 
 一句话概括职责：**「行情与成交 → 仓位/账户状态」的记账机。**
 
-> **状态：v0.8.0。**
+> **状态：v0.9.0。**
 > 已可用：**正向与币本位** × **逐仓与全仓**四个象限的完整核算（开平加减仓与反手、
 > 盈亏、手续费、全套风险指标）、内置撮合、**算法委托**、预下单计算与挂单冻结、
 > 资金费结算、强平。剩余排期见 [版本排期](docs/roadmap.md)。
@@ -38,11 +38,11 @@ r, _ := sim.Fill(okxsim.Fill{
 })
 // r.After.Margin = 624   r.Fee = -1.56
 
-sim.SetMark("BTC-USDT-SWAP", d("77000"))
+sim.SetMarkPx("BTC-USDT-SWAP", d("77000"))
 m, _ := sim.MetricsOf("BTC-USDT-SWAP", types.PosNet)
 // m.UPL = -40   m.MMR = 12.32   m.MgnRatio = 42.1356   m.LiqPx / m.BkPx
 
-b, _ := sim.Balance("USDT")
+b, _ := sim.BalanceOf("USDT")
 // b.CashBal = 9374.44   b.IsoEq = 584   b.Eq = 9958.44
 ```
 
@@ -79,7 +79,7 @@ cm, _ := sim.CrossMetricsOf("USDT")
 sim.Deposit("BTC", d("1"))
 sim.Fill(okxsim.Fill{InstID: "BTC-USD-SWAP", TdMode: types.TdIsolated, /* ... */})
 
-b, _ := sim.Balance("BTC")     // 一切以 BTC 计
+b, _ := sim.BalanceOf("BTC")     // 一切以 BTC 计
 m, _ := sim.MetricsOf("BTC-USD-SWAP", types.PosLong)
 ```
 

@@ -1,7 +1,6 @@
 package okxsim
 
 import (
-	"encoding/json"
 	"strconv"
 
 	"github.com/dream-until-dawn/okx-position-simulator-go/refdata"
@@ -202,19 +201,4 @@ func (s *Simulator) BalanceViews() ([]BalanceView, error) {
 		out = append(out, newBalanceView(b))
 	}
 	return out, nil
-}
-
-// MarshalPositions 以 OKX 响应信封的形态输出全部仓位。
-//
-// 输出可直接与 GET /api/v5/account/positions 的原始响应做文本 diff。
-func (s *Simulator) MarshalPositions() ([]byte, error) {
-	views, err := s.PositionViews()
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(struct {
-		Code string         `json:"code"`
-		Msg  string         `json:"msg"`
-		Data []PositionView `json:"data"`
-	}{Code: refdata.CodeOK, Data: views})
 }

@@ -32,8 +32,8 @@ Go 库特有约束：
 | `v0.6.0` ✅ | **币本位(inverse)**：inverse 全线公式（uPL / IMR / liqPx / bkPx / max-size）、settleCcy 为标的币的账户模型 | 已达成：实盘对拍 27 字段一致，覆盖四个象限 | 3 |
 | `v0.7.0` ✅ | **算法委托**：计划委托、止盈止损、OCO、移动止盈止损，触发价类型（last / index / mark） | 已达成：行为逐条实测，含一次真实触发的全过程 | 3 |
 | `v0.8.0` ✅ | **对拍加固与差异清零**：与 OKX 原始 JSON 的全字段对拍、修复暴露的全部差异、性能基准 | 已达成：184 字段中有差异 0、未分类 0 | 5 |
-| `v0.9.0` 🔨 | **API 打磨**：命名与签名定型、向后兼容审查、文档、示例 | API 冻结评审通过 | 2 |
-| `v1.0.0` | **冻结** | — | 1 |
+| `v0.9.0` ✅ | **API 打磨**：命名与签名定型、向后兼容审查、包文档、示例 | 已达成：导出面有金文件守卫 | 2 |
+| `v1.0.0` 🔨 | **冻结** | — | 1 |
 
 ---
 
@@ -103,6 +103,32 @@ Go 库特有约束：
 性能基准照出两处结构问题：`Fill` 的资金校验只要可用余额却调了完整的 `Balance`
 （占其耗时 52%），而 `CrossMetricsOf` 在遍历仓位的循环里逐个重算合并张数（平方）。
 修完 `Fill` 的分配次数降了一半，随仓位数的增长也从 2.05 倍压到 1.51 倍。
+
+### v0.9.0 —— API 打磨
+
+v1.0.0 是单向门：发布 v2 就得给 module path 加 `/v2` 后缀，而 v0 期间 API 可以随便
+改。这一版把该改的一次改完，落到两条**可学的规则**上：
+
+- 三对行情读写全部配对（`XxxPx` / `SetXxxPx`）。此前 `MarkPx`/`SetMark`、
+  `LastPx`/`SetLast`、`IndexPx`/`SetIndexPx` 三种写法各不相同，猜 `SetMarkPx`
+  会得到编译错误
+- 按键查询的复合结果一律带 `Of`，返回标量的不带。`Balance` 改名成 `BalanceOf`
+  还顺带消除了与 `Balance` 类型的重名——`PositionOf` 当初就是为躲这个才那么叫的
+
+合并了 `OpenOrders` 与 `PendingOrders`（同一份数据的两个视图，用户只能靠猜），
+`AlgoOrders`+`AlgoTriggerPx` 换成与 `PendingOrder` 同构的 `PendingAlgos`，
+并补上按 ID 取单笔的 `PendingOrderOf` / `PendingAlgoOf`。
+
+移除三处 v1.0 之后再也甩不掉的负担：`IsMultipleOfLot`（对 `refdata.IsMultipleOf`
+的纯转发）、`MarshalPositions`（不对称，且是 6 行 json 包装）、`MarketOrdPx`
+（可变的包级 var，任何 importer 都能改写）。`ComputeMetrics` 不再导出——它的签名
+开发期已改过两次，导出等于永久冻结一个内部形状。
+
+新增 `doc.go`：包级文档是 pkg.go.dev 上的第一屏，此前一直空着。
+
+留下两条守卫：`TestExportedAPIIsFrozen` 把导出面记成金文件，任何增删改名都必须同时
+改清单、从而出现在 diff 里；`TestPriceAccessorsArePaired` 保证以后加第四条行情时
+不会再走样。
 
 ---
 

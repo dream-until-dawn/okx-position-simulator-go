@@ -287,11 +287,3 @@ func realizedPnl(inst refdata.Instrument, cur, closeSz, avgPx, closePx decimal.D
 	}
 	return q.Mul(diff)
 }
-
-// IsMultipleOfLot 报告张数是否为数量精度的整数倍。
-//
-// 转发到 refdata.IsMultipleOf，使调用方校验自己持有的仓位状态时不必额外引入
-// refdata 包。
-func IsMultipleOfLot(sz, lotSz decimal.Decimal) bool {
-	return refdata.IsMultipleOf(sz, lotSz)
-}

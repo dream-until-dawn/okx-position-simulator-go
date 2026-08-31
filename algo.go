@@ -9,12 +9,6 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// MarketOrdPx 是「按市价下单」的委托价占位值，与 OKX 的约定一致。
-//
-// OKX 用 -1 表示触发后以市价成交。用一个具名常量而不是散落各处的 -1，
-// 是为了让「这不是一个价格」这件事在代码里看得见。
-var MarketOrdPx = decimal.NewFromInt(-1)
-
 // AlgoOrder 是一笔算法委托。
 //
 // 与普通委托的根本区别在于**它不占用任何资金**：不进订单簿、不冻结保证金、
@@ -36,7 +30,9 @@ type AlgoOrder struct {
 	ReduceOnly bool
 
 	// TriggerPx / OrdPx 用于 trigger 类型。
-	// OrdPx 为 MarketOrdPx（-1）时触发后按市价成交。
+	//
+	// OrdPx 留空（零值）即触发后按市价成交，给 -1 也一样——判据是「非正数即市价」。
+	// 让零值做最常见的那件事是 Go 的惯例，也省掉一个能被任何 importer 改写的全局。
 	TriggerPx     decimal.Decimal
 	TriggerPxType types.TriggerPxType
 	OrdPx         decimal.Decimal
@@ -149,7 +145,8 @@ func (s *Simulator) PlaceAlgoOrder(a AlgoOrder) (AlgoPlaceResult, error) {
 		p.Extreme = s.triggerPrice(legs[0].pxType, a.InstID, ref)
 		if !p.Extreme.IsPositive() {
 			return AlgoPlaceResult{}, okxerr.New(okxerr.CodeParamError,
-				"%s 没有可用的参考价，移动止损无从起算", a.InstID)
+				"%s 没有可用的参考价，移动止损的极值无从起算"+
+					"——请先经 Advance 推进行情，或调用 SetLastPx / SetMarkPx", a.InstID)
 		}
 		p.Legs[0].px = s.movePx(p.Extreme, a.CallbackRatio, legs[0].above)
 	}
@@ -266,24 +263,49 @@ func (s *Simulator) CancelAlgoOrder(algoID string) error {
 	return nil
 }
 
-// AlgoOrders 返回全部待触发的算法委托，按 algoId 排序，使输出稳定可比对。
-func (s *Simulator) AlgoOrders() []AlgoOrder {
-	out := make([]AlgoOrder, 0, len(s.algos))
-	for _, p := range s.algos {
-		out = append(out, p.Order)
+// PendingAlgo 是一笔待触发的算法委托及其当前状态。
+//
+// 与 PendingOrder 同构：Order 是当初挂出去的参数，其余字段是它此刻的运行状态。
+// 移动止损的触发价会随行情走，只看 Order 是看不出来的。
+type PendingAlgo struct {
+	AlgoID string
+	Order  AlgoOrder
+
+	// TriggerPx 是当前的触发价。多条腿时给第一条；移动止损的这一项会随极值棘轮。
+	TriggerPx decimal.Decimal
+
+	// Extreme 是移动止损自挂单以来见过的极值，其余类型为零。
+	Extreme decimal.Decimal
+}
+
+// PendingAlgos 返回待触发的算法委托，instID 为空则返回全部，按 algoId 排序。
+func (s *Simulator) PendingAlgos(instID string) []PendingAlgo {
+	out := make([]PendingAlgo, 0, len(s.algos))
+	for id, p := range s.algos {
+		if instID != "" && p.Order.InstID != instID {
+			continue
+		}
+		out = append(out, toPendingAlgo(id, p))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].AlgoID < out[j].AlgoID })
 	return out
 }
 
-// AlgoTriggerPx 返回某笔算法委托当前的触发价，移动止损会随行情变化。
-// 有多条腿时返回第一条；不存在该委托时第二个返回值为 false。
-func (s *Simulator) AlgoTriggerPx(algoID string) (decimal.Decimal, bool) {
+// PendingAlgoOf 按 algoId 取一笔算法委托；不存在时第二个返回值为 false。
+func (s *Simulator) PendingAlgoOf(algoID string) (PendingAlgo, bool) {
 	p, ok := s.algos[algoID]
-	if !ok || len(p.Legs) == 0 {
-		return decimal.Zero, false
+	if !ok {
+		return PendingAlgo{}, false
 	}
-	return p.Legs[0].px, true
+	return toPendingAlgo(algoID, p), true
+}
+
+func toPendingAlgo(id string, p pendingAlgo) PendingAlgo {
+	out := PendingAlgo{AlgoID: id, Order: p.Order, Extreme: p.Extreme}
+	if len(p.Legs) > 0 {
+		out.TriggerPx = p.Legs[0].px
+	}
+	return out
 }
 
 // triggerPrice 按触发价类型取当前用于比较的价格。

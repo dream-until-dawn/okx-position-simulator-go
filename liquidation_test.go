@@ -81,7 +81,7 @@ func TestLiquidationLosesEntireMargin(t *testing.T) {
 	eq(t, step.Liquidations[0].Loss, margin.String(), "损失应为全部保证金")
 	eq(t, s.CashBal("USDT"), cashBefore.String(), "强平不应改变现金余额")
 
-	b, err := s.Balance("USDT")
+	b, err := s.BalanceOf("USDT")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestLiquidationCancelsPendingOrders(t *testing.T) {
 	if _, err := s.PlaceOrder(limitOrder("o1", types.Buy, "1", "50000")); err != nil {
 		t.Fatalf("挂单失败: %v", err)
 	}
-	if len(s.OpenOrders("")) != 1 {
+	if len(s.PendingOrders("")) != 1 {
 		t.Fatal("委托未挂上")
 	}
 
@@ -112,10 +112,10 @@ func TestLiquidationCancelsPendingOrders(t *testing.T) {
 	if got := step.Liquidations[0].CanceledOrders; len(got) != 1 || got[0] != "o1" {
 		t.Errorf("强平应撤销挂单，实际 %v", got)
 	}
-	if len(s.OpenOrders("")) != 0 {
+	if len(s.PendingOrders("")) != 0 {
 		t.Error("强平后不应还有挂单")
 	}
-	b, err := s.Balance("USDT")
+	b, err := s.BalanceOf("USDT")
 	if err != nil {
 		t.Fatal(err)
 	}

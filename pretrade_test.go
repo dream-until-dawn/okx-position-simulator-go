@@ -78,11 +78,11 @@ func TestOrderCostRoundsPrice(t *testing.T) {
 	}
 	eq(t, pr.Cost.Frozen, quoted.Frozen.String(), "实际冻结应与报价一致")
 
-	orders := s.OpenOrders("BTC-USDT-SWAP")
+	orders := s.PendingOrders("BTC-USDT-SWAP")
 	if len(orders) != 1 {
 		t.Fatalf("挂单数 = %d", len(orders))
 	}
-	eq(t, orders[0].Px, "70339.2", "挂住的委托价应已按 tickSz 取整")
+	eq(t, orders[0].Order.Px, "70339.2", "挂住的委托价应已按 tickSz 取整")
 }
 
 // TestOrderCostUsesTakerRate 预冻结一律按 taker 费率，即便该委托必然作为 maker 成交。
@@ -154,7 +154,7 @@ func TestOrderCostAffordable(t *testing.T) {
 // 买单本会立即以标记价附近成交、所需保证金更少，OKX 仍按委托价计算。
 func TestMaxSizePriceRule(t *testing.T) {
 	s := newSim(t, types.NetMode)
-	if err := s.SetMark("BTC-USDT-SWAP", dec("78000")); err != nil {
+	if err := s.SetMarkPx("BTC-USDT-SWAP", dec("78000")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -231,7 +231,7 @@ func TestMaxSizeValue(t *testing.T) {
 func TestPlaceOrderFreezesFunds(t *testing.T) {
 	s := newSim(t, types.NetMode)
 
-	before, err := s.Balance("USDT")
+	before, err := s.BalanceOf("USDT")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +246,7 @@ func TestPlaceOrderFreezesFunds(t *testing.T) {
 	cost := pr.Cost
 	eq(t, cost.Frozen, "564.120384", "冻结额")
 
-	after, err := s.Balance("USDT")
+	after, err := s.BalanceOf("USDT")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +260,7 @@ func TestPlaceOrderFreezesFunds(t *testing.T) {
 	if err := s.CancelOrder("o1"); err != nil {
 		t.Fatalf("撤单失败: %v", err)
 	}
-	restored, err := s.Balance("USDT")
+	restored, err := s.BalanceOf("USDT")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +273,7 @@ func TestPlaceOrderFreezesFunds(t *testing.T) {
 // 实测：挂出 4 张后 OKX 的 maxBuy 从 33.76 降到 29.76。
 func TestMaxSizeAccountsForPendingOrders(t *testing.T) {
 	s := newSim(t, types.NetMode)
-	if err := s.SetMark("BTC-USDT-SWAP", dec("78000")); err != nil {
+	if err := s.SetMarkPx("BTC-USDT-SWAP", dec("78000")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -309,7 +309,7 @@ func TestPlaceOrderInsufficientBalance(t *testing.T) {
 	if _, err := s.PlaceOrder(limitOrder("o1", types.Buy, "4", "78000")); !okxerr.HasCode(err, okxerr.CodeInsufficientBal) {
 		t.Errorf("余额不足的错误 = %v，期望 51008", err)
 	}
-	if len(s.PendingOrders()) != 0 {
+	if len(s.PendingOrders("")) != 0 {
 		t.Error("挂单失败不应留下记录")
 	}
 }
