@@ -88,6 +88,9 @@ func TestInstrumentLinear(t *testing.T) {
 	if i.CtValCcy != "BTC" {
 		t.Errorf("ctValCcy = %q，正向合约面值应以标的币计", i.CtValCcy)
 	}
+	if i.GroupID != "4" {
+		t.Errorf("groupId = %q，期望 4；该字段是费率查表的入口，不可丢弃", i.GroupID)
+	}
 	eq(t, i.CtVal, "0.01", "ctVal")
 	eq(t, i.CtMult, "1", "ctMult")
 	eq(t, i.LotSz, "0.01", "lotSz")

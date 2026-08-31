@@ -1,0 +1,74 @@
+{
+  "code": "0",
+  "data": [
+    {
+      "category": "1",
+      "delivery": "",
+      "exercise": "",
+      "feeGroup": [
+        {
+          "elpMaker": "-0.0002",
+          "groupId": "1",
+          "maker": "-0.0002",
+          "rpiMaker": "-0.0002",
+          "taker": "-0.0005"
+        },
+        {
+          "elpMaker": "-0.0002",
+          "groupId": "2",
+          "maker": "-0.0002",
+          "rpiMaker": "-0.0002",
+          "taker": "-0.0005"
+        },
+        {
+          "elpMaker": "-0.0002",
+          "groupId": "3",
+          "maker": "-0.0002",
+          "rpiMaker": "-0.0002",
+          "taker": "-0.0005"
+        },
+        {
+          "elpMaker": "-0.0002",
+          "groupId": "4",
+          "maker": "-0.0002",
+          "rpiMaker": "-0.0002",
+          "taker": "-0.0005"
+        },
+        {
+          "elpMaker": "-0.0002",
+          "groupId": "5",
+          "maker": "-0.0002",
+          "rpiMaker": "-0.0002",
+          "taker": "-0.0005"
+        },
+        {
+          "elpMaker": "-0.0002",
+          "groupId": "6",
+          "maker": "-0.0002",
+          "rpiMaker": "-0.0002",
+          "taker": "-0.0005"
+        },
+        {
+          "elpMaker": "-0.0002",
+          "groupId": "7",
+          "maker": "-0.0002",
+          "rpiMaker": "-0.0002",
+          "taker": "-0.0005"
+        }
+      ],
+      "fiat": [],
+      "instType": "SWAP",
+      "level": "Lv1",
+      "maker": "-0.0002",
+      "makerU": "-0.0002",
+      "makerUSDC": "-0.0002",
+      "ruleType": "normal",
+      "settle": "",
+      "taker": "-0.0005",
+      "takerU": "-0.0005",
+      "takerUSDC": "-0.0005",
+      "ts": "1788156016231"
+    }
+  ],
+  "msg": ""
+}

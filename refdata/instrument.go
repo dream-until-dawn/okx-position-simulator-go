@@ -23,6 +23,7 @@ type Instrument struct {
 	CtMult     decimal.Decimal // 合约乘数
 	CtValCcy   string          // 合约面值计价币种
 	CtType     types.CtType    // linear（正向）/ inverse（反向）
+	GroupID    string          // 手续费费率组，对应费率表 feeGroup 里的 groupId
 	Lever      decimal.Decimal // 该合约支持的最大杠杆
 	TickSz     decimal.Decimal // 下单价格精度
 	LotSz      decimal.Decimal // 下单数量精度
@@ -47,6 +48,7 @@ type rawInstrument struct {
 	CtMult     string `json:"ctMult"`
 	CtValCcy   string `json:"ctValCcy"`
 	CtType     string `json:"ctType"`
+	GroupID    string `json:"groupId"`
 	Lever      string `json:"lever"`
 	TickSz     string `json:"tickSz"`
 	LotSz      string `json:"lotSz"`
@@ -75,6 +77,7 @@ func (i *Instrument) UnmarshalJSON(b []byte) error {
 	i.SettleCcy = r.SettleCcy
 	i.CtValCcy = r.CtValCcy
 	i.CtType = types.CtType(r.CtType)
+	i.GroupID = r.GroupID
 	i.State = types.InstState(r.State)
 
 	if i.CtVal, err = parseDec("ctVal", r.CtVal); err != nil {
@@ -124,6 +127,7 @@ func (i Instrument) MarshalJSON() ([]byte, error) {
 		CtMult:     formatDec(i.CtMult),
 		CtValCcy:   i.CtValCcy,
 		CtType:     i.CtType.String(),
+		GroupID:    i.GroupID,
 		Lever:      formatDec(i.Lever),
 		TickSz:     formatDec(i.TickSz),
 		LotSz:      formatDec(i.LotSz),
