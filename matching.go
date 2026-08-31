@@ -1,6 +1,7 @@
 package okxsim
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/dream-until-dawn/okx-position-simulator-go/okxerr"
@@ -77,6 +78,22 @@ type PlaceResult struct {
 	State types.OrdState
 	Cost  OrderCost    // 挂住时的冻结明细；立即成交时为零值
 	Fills []FillResult // 立即成交产生的结果
+
+	// Reason 在 State 为 canceled 时说明原因。
+	//
+	// 只挂单委托会立即成交而被撤，与立即成交类委托无法成交而被撤，
+	// 两者的状态都是 canceled，但含义截然不同——前者是价格挂得太激进，
+	// 后者是价格挂得够不着。不区分开，使用者只能去猜。
+	Reason CancelReason
+	Detail string
+}
+
+// Canceled 报告该委托是否被撤销，并给出原因。
+func (r PlaceResult) Canceled() (CancelReason, bool) {
+	if r.State == types.OrdCanceled {
+		return r.Reason, true
+	}
+	return "", false
 }
 
 // StepResult 是推进一步行情的结果。
@@ -85,7 +102,12 @@ type StepResult struct {
 	Fundings     []FundingResult
 	Fills        []FillResult
 	Liquidations []Liquidation
-	Canceled     []string // 本步被撤销的委托，如资金不足以承接成交
+
+	// Canceled 是本步被撤销的委托及其原因。
+	//
+	// 只给委托 ID 是不够的：委托可能因资金不足以承接成交而撤，也可能因强平
+	// 前清场而撤，两者对策略的含义完全不同。
+	Canceled []Cancellation
 }
 
 // LastPx 返回某合约当前的最新成交价；未推进过行情则返回零值。
@@ -178,7 +200,11 @@ func (s *Simulator) PlaceOrder(o Order) (PlaceResult, error) {
 	switch {
 	case canFill && o.OrdType.IsPostOnly():
 		// 只挂单委托若会立即成交，OKX 直接撤销而不成交
-		return PlaceResult{OrdID: o.OrdID, State: types.OrdCanceled}, nil
+		return PlaceResult{
+			OrdID: o.OrdID, State: types.OrdCanceled,
+			Reason: CancelPostOnlyWouldTake,
+			Detail: fmt.Sprintf("委托价 %s 相对最新价 %s 已可成交", o.Px, last),
+		}, nil
 
 	case canFill:
 		fr, err := s.fillOrder(o, fillPx, types.Taker, o.Ts)
@@ -190,7 +216,14 @@ func (s *Simulator) PlaceOrder(o Order) (PlaceResult, error) {
 
 	case o.OrdType.IsImmediate():
 		// 立即成交类委托无法成交时直接撤销，不挂入簿中
-		return PlaceResult{OrdID: o.OrdID, State: types.OrdCanceled}, nil
+		detail := fmt.Sprintf("委托价 %s 相对最新价 %s 无法成交", o.Px, last)
+		if !last.IsPositive() {
+			detail = "尚无最新价，无从判断能否成交——请先经 Advance 推进行情或调用 SetLast"
+		}
+		return PlaceResult{
+			OrdID: o.OrdID, State: types.OrdCanceled,
+			Reason: CancelImmediateUnfilled, Detail: detail,
+		}, nil
 	}
 
 	cost, err := s.freezeOrder(o)
@@ -231,8 +264,7 @@ func (s *Simulator) freezeOrder(o Order) (OrderCost, error) {
 		return OrderCost{}, err
 	}
 	if !cost.Affordable(bal.AvailBal) {
-		return OrderCost{}, okxerr.New(okxerr.CodeInsufficientBal,
-			"%s 可用余额 %s 不足以挂出该委托（需冻结 %s）", cost.Ccy, bal.AvailBal, cost.Frozen)
+		return OrderCost{}, newShortfallError(cost.Ccy, bal.AvailBal, cost.Frozen, "挂出该委托")
 	}
 	s.pending[o.OrdID] = PendingOrder{OrdID: o.OrdID, Req: req, Cost: cost, Order: o}
 	return cost, nil
@@ -302,9 +334,17 @@ func (s *Simulator) Advance(b Bar) (StepResult, error) {
 	for _, o := range s.triggeredOrders(b) {
 		fr, err := s.fillOrder(o, o.Px, types.Maker, b.Ts)
 		if err != nil {
-			// 余额不足以承接这笔成交时撤销该委托，与真实撮合中的资金校验一致
+			// 余额不足以承接这笔成交时撤销该委托，与真实撮合中的资金校验一致。
+			// 把原因一并带出——不然使用者只会看到委托凭空消失。
 			delete(s.pending, o.OrdID)
-			res.Canceled = append(res.Canceled, o.OrdID)
+			c := Cancellation{
+				OrdID: o.OrdID, InstID: o.InstID,
+				Reason: CancelInsufficientFunds, Detail: err.Error(),
+			}
+			if sf, ok := ShortfallOf(err); ok {
+				c.Detail = sf.String()
+			}
+			res.Canceled = append(res.Canceled, c)
 			continue
 		}
 		res.Fills = append(res.Fills, fr)
@@ -318,7 +358,12 @@ func (s *Simulator) Advance(b Bar) (StepResult, error) {
 	}
 	res.Liquidations = liqs
 	for _, l := range liqs {
-		res.Canceled = append(res.Canceled, l.CanceledOrders...)
+		for _, id := range l.CanceledOrders {
+			res.Canceled = append(res.Canceled, Cancellation{
+				OrdID: id, InstID: l.InstID, Reason: CancelLiquidation,
+				Detail: fmt.Sprintf("%s %s 触发强平", l.InstID, l.PosSide),
+			})
+		}
 	}
 	return res, nil
 }

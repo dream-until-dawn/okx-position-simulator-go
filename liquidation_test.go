@@ -3,6 +3,7 @@ package okxsim
 import (
 	"testing"
 
+	"github.com/dream-until-dawn/okx-position-simulator-go/refdata"
 	"github.com/dream-until-dawn/okx-position-simulator-go/types"
 	"github.com/shopspring/decimal"
 )
@@ -55,8 +56,8 @@ func TestLiquidationTriggersAtLiqPx(t *testing.T) {
 	if _, ok := s.PositionOf("BTC-USDT-SWAP", types.PosNet); ok {
 		t.Error("强平后仓位应被移除")
 	}
-	t.Logf("强平：成交价 %s，损失保证金 %s，穿仓 %s",
-		liq.Px, liq.Loss, liq.Bankrupt)
+	t.Logf("强平：成交价 %s，损失保证金 %s，罚金 %s，超出 %s",
+		liq.Px, liq.Loss, liq.Penalty, liq.Excess)
 }
 
 // TestLiquidationLosesEntireMargin 逐仓强平的结果是保证金全额损失，现金余额不变。
@@ -123,37 +124,60 @@ func TestLiquidationCancelsPendingOrders(t *testing.T) {
 	}
 }
 
-// TestLiquidationBankruptOnGap 行情跳空穿过破产价时产生穿仓。
+// TestLiquidationExcessScalesWithGap 亏损超出保证金的幅度随跳空幅度增大。
 //
-// 一根 K 线内价格从强平价上方直接跳到破产价下方，中间没有可成交的价位，
-// 亏损因而超出保证金。这是回测中真实存在的情形。
-func TestLiquidationBankruptOnGap(t *testing.T) {
-	s, m := liqSim(t, types.Buy, "100")
-	t.Logf("liqPx=%s bkPx=%s", m.LiqPx, m.BkPx)
+// 常态强平也会有小幅超出——触发与成交之间价格总会再走一点。真实观测印证了这点：
+// 一次 BTC 空头强平的超出为 0.0602，占保证金 1.1715 的 5%，OKX 以一笔单独的
+// 账单退了回来。所以「常态超出为零」是错的期望。
+//
+// 有意义的判据是量级：跳空穿过破产价时的超出应当远大于常态滑移，
+// 这才是回测中值得警觉的信号。
+func TestLiquidationExcessScalesWithGap(t *testing.T) {
+	// 常态：刚跌破强平价
+	s1, m1 := liqSim(t, types.Buy, "100")
+	hit := m1.LiqPx.Sub(dec("1"))
+	normal := mustAdvance(t, s1, Bar{
+		InstID: "BTC-USDT-SWAP", Last: hit, High: hit, Low: hit, Ts: 3}).Liquidations[0]
 
-	// 直接跳到破产价下方
-	gap := m.BkPx.Sub(dec("200"))
-	step := mustAdvance(t, s, Bar{
-		InstID: "BTC-USDT-SWAP", Last: gap, High: gap, Low: gap, Ts: 3})
-	if len(step.Liquidations) != 1 {
-		t.Fatalf("应触发强平")
-	}
-	liq := step.Liquidations[0]
-	if !liq.IsBankrupt() {
-		t.Errorf("跳空穿过破产价应产生穿仓，实际穿仓金额 %s", liq.Bankrupt)
-	}
-	// 成交价应当是跳空后的标记价，而不是已经无法成交的破产价
-	eq(t, liq.Px, gap.String(), "跳空时按标记价成交")
-	t.Logf("穿仓金额 %s（保证金 %s）", liq.Bankrupt, liq.Loss)
-
-	// 正常触发时不应有穿仓
+	// 跳空：直接跌到破产价下方
 	s2, m2 := liqSim(t, types.Buy, "100")
-	hit := m2.LiqPx.Sub(dec("1"))
-	step2 := mustAdvance(t, s2, Bar{
-		InstID: "BTC-USDT-SWAP", Last: hit, High: hit, Low: hit, Ts: 3})
-	if step2.Liquidations[0].IsBankrupt() {
-		t.Errorf("常态强平不应穿仓，实际 %s", step2.Liquidations[0].Bankrupt)
+	gap := m2.BkPx.Sub(dec("200"))
+	gapped := mustAdvance(t, s2, Bar{
+		InstID: "BTC-USDT-SWAP", Last: gap, High: gap, Low: gap, Ts: 3}).Liquidations[0]
+
+	t.Logf("常态：成交价 %s 超出 %s；跳空：成交价 %s 超出 %s（保证金 %s）",
+		normal.Px, normal.Excess, gapped.Px, gapped.Excess, normal.Loss)
+
+	if !gapped.Excess.GreaterThan(normal.Excess.Mul(decimal.NewFromInt(10))) {
+		t.Errorf("跳空的超出 %s 应远大于常态的 %s", gapped.Excess, normal.Excess)
 	}
+	// 两种情形下持仓方的损失都封顶为保证金
+	eq(t, normal.Loss, gapped.Loss.String(), "损失均封顶为保证金")
+	// 成交价始终是触发时的市价
+	eq(t, gapped.Px, gap.String(), "按触发时的市价成交")
+}
+
+// TestLiquidationPenaltyIsMaintenanceMargin 爆仓罚金等于名义价值乘以维持保证金率。
+//
+// 实测：一次 BTC 空头强平的 liqPenalty 为 0.47139948，名义价值 117.84987，
+// 两者之比恰为 0.004，正是该档位的 mmr。
+func TestLiquidationPenaltyIsMaintenanceMargin(t *testing.T) {
+	s, m := liqSim(t, types.Buy, "100")
+	hit := m.LiqPx.Sub(dec("1"))
+	liq := mustAdvance(t, s, Bar{
+		InstID: "BTC-USDT-SWAP", Last: hit, High: hit, Low: hit, Ts: 3}).Liquidations[0]
+
+	inst, err := refdata.MustEmbedded().Instrument("BTC-USDT-SWAP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nom := notional(inst, liq.Sz, liq.Px)
+	want := nom.Mul(m.MMRRate).Neg()
+	eq(t, liq.Penalty, want.String(), "爆仓罚金")
+	if liq.Penalty.IsZero() {
+		t.Error("罚金不应为零——OKX 会照收，它是 liqPenalty 字段的来源")
+	}
+	t.Logf("名义价值 %s × mmr %s = 罚金 %s", nom, m.MMRRate, liq.Penalty)
 }
 
 // TestLiquidationShortSide 空头方向的强平，与多头对称。

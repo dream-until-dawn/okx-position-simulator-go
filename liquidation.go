@@ -30,12 +30,20 @@ type Liquidation struct {
 	PosSide types.PosSide
 	Kind    LiquidationKind
 
-	Sz       decimal.Decimal // 被平掉的张数
-	Px       decimal.Decimal // 强平成交价
-	Pnl      decimal.Decimal // 该次平仓实现的盈亏
-	Fee      decimal.Decimal // 强平手续费，负数表示收取
-	Loss     decimal.Decimal // 该仓位在本次强平中损失的保证金
-	Bankrupt decimal.Decimal // 穿仓金额，正数表示亏损超出保证金的部分
+	Sz      decimal.Decimal // 被平掉的张数
+	Px      decimal.Decimal // 强平成交价
+	Pnl     decimal.Decimal // 该次平仓实现的盈亏
+	Fee     decimal.Decimal // 强平手续费，负数表示收取
+	Penalty decimal.Decimal // 爆仓罚金，负数表示收取；等于名义价值乘以维持保证金率
+	Loss    decimal.Decimal // 持仓方实际损失的保证金，封顶为该仓位的保证金
+
+	// Excess 是亏损、手续费与罚金之和超出保证金的部分，由风险准备金承担，
+	// 持仓方不承担。实测 OKX 会以一笔单独的账单把这部分退回仓位，
+	// 使损失恰好等于保证金。
+	//
+	// 数值大意味着行情在触发与成交之间跳空穿过，是极端行情的信号，
+	// 回测中值得留意。
+	Excess decimal.Decimal
 
 	MgnRatioBefore decimal.Decimal
 	MgnRatioAfter  decimal.Decimal
@@ -46,8 +54,11 @@ type Liquidation struct {
 	Ts             int64
 }
 
-// IsBankrupt 报告本次强平是否发生了穿仓。
-func (l Liquidation) IsBankrupt() bool { return l.Bankrupt.IsPositive() }
+// IsBankrupt 报告本次强平的亏损是否超出了保证金。
+//
+// 超出的部分由风险准备金承担，持仓方的损失仍封顶为保证金；
+// 该标志的意义在于提示行情在触发与成交之间跳空穿过。
+func (l Liquidation) IsBankrupt() bool { return l.Excess.IsPositive() }
 
 // checkLiquidation 检查某合约上的仓位是否触及强平线，并执行强平。
 //
@@ -166,16 +177,18 @@ func nextLowerTier(tbl *refdata.TierTable, tier int) *refdata.PositionTier {
 
 // liquidateFully 全部强平一个仓位。
 //
-// 成交价取破产价，即权益恰好归零的价格。强平在保证金率触及 1 时触发，此刻权益
-// 尚有「维持保证金 + 平仓手续费」的缓冲；强平引擎接手后按破产价了结，缓冲部分
-// 归风险准备金而不退还持仓方——OKX 的仓位结构里有 liqPenalty（累计爆仓罚金）
-// 一项，正是这笔钱的去处。因此逐仓强平的结果是保证金全额损失。
+// 结算方式以模拟盘上一次真实强平为准，各项差值均为零：
 //
-// 行情跳空穿过破产价时无法按破产价成交，只能按当前标记价了结，亏损因而超出
-// 保证金，超出的部分即穿仓金额。这是回测中真实存在的情形：一根 K 线内价格从
-// 强平价上方直接跳到破产价下方，中间没有可成交的价位。
+//	成交价  触发时的市价，可能已越过强平价（实测触发价 78526.61，成交价 78566.58）
+//	盈亏    按该成交价计算
+//	手续费  名义价值 × taker 费率
+//	罚金    名义价值 × 维持保证金率 —— 实测 0.47139948 / 117.84987 = 0.004，正是 mmr
+//	损失    封顶为该仓位的保证金；超出部分由风险准备金承担并退回，持仓方不承担
+//	现金    自始至终不变
 //
-// 现金余额在整个过程中不变——保证金在开仓时就已从现金划走，强平只是让它归零。
+// 曾按「成交于费后破产价、罚金为零」建模，净效果相同但四个字段全对不上：
+// OKX 是照市价成交后另收一笔等于维持保证金的罚金，再把超额部分退回。
+// 净效果相同不等于字段相同，而字段级同构正是本项目的验收标准之一。
 func (s *Simulator) liquidateFully(key positionKey, m Metrics, ts int64) (Liquidation, error) {
 	pos := s.pos[key]
 	inst, err := s.cfg.RefData.Instrument(key.instID)
@@ -187,31 +200,29 @@ func (s *Simulator) liquidateFully(key positionKey, m Metrics, ts int64) (Liquid
 		return Liquidation{}, err
 	}
 
-	px := liquidationFillPx(inst, pos, m, rate.Taker)
+	px := m.MarkPx
 	sz := pos.AbsPos()
+	nom := notional(inst, sz, px)
 	pnl := realizedPnl(inst, pos.SignedPos(), sz, pos.AvgPx, px)
-	fee := notional(inst, sz, px).Mul(rate.Taker)
+	fee := nom.Mul(rate.Taker.Abs()).Neg()
+	penalty := nom.Mul(m.MMRRate).Neg()
 
 	liq := Liquidation{
 		InstID: key.instID, PosSide: key.posSide, Kind: LiqFull,
-		Sz: sz, Px: px, Pnl: pnl, Fee: fee,
+		Sz: sz, Px: px, Pnl: pnl, Fee: fee, Penalty: penalty,
 		MgnRatioBefore: m.MgnRatio, TierBefore: m.Tier, TierAfter: m.Tier,
 		Ts: ts,
 	}
 
-	// 保证金全额损失；亏损超出保证金的部分是穿仓
+	// 损失封顶为保证金；超出的部分由风险准备金承担并退回，持仓方不承担
 	liq.Loss = pos.Margin
-	if deficit := pos.Margin.Add(pnl).Add(fee); deficit.IsNegative() {
-		liq.Bankrupt = deficit.Neg()
+	if excess := pos.Margin.Add(pnl).Add(fee).Add(penalty); excess.IsNegative() {
+		liq.Excess = excess.Neg()
 	}
 
 	pos.RealizedPnl = pos.RealizedPnl.Add(pnl)
 	pos.Fee = pos.Fee.Add(fee)
-	// 保证金里未被盈亏与手续费消耗掉的残余归风险准备金，记为爆仓罚金——
-	// 这正是 OKX 仓位结构中 liqPenalty 一项的来源。按费后破产价了结时它恰为零。
-	if resid := pos.Margin.Add(pnl).Add(fee); resid.IsPositive() {
-		pos.LiqPenalty = pos.LiqPenalty.Sub(resid)
-	}
+	pos.LiqPenalty = pos.LiqPenalty.Add(penalty)
 	pos.Pos = decimal.Zero
 	pos.AvgPx = decimal.Zero
 	pos.Margin = decimal.Zero
@@ -219,53 +230,6 @@ func (s *Simulator) liquidateFully(key positionKey, m Metrics, ts int64) (Liquid
 	delete(s.pos, key)
 
 	return liq, nil
-}
-
-// liquidationFillPx 返回强平的【成交价】。
-//
-// 与 metrics.go 里的 liquidationPx 是两回事：那个算的是「预估强平价」，
-// 即触发强平的价格门槛；这个算的是强平真正在哪个价位了结。
-//
-// 取的是【费后破产价】——保证金、已实现盈亏与强平手续费三者相加恰好归零的价格：
-//
-//	多头  (avgPx×Q − margin) / (Q × (1 − taker))
-//	空头  (avgPx×Q + margin) / (Q × (1 + taker))
-//
-// 不能直接取破产价。破产价的定义是「权益恰好归零」，在那个价位上盈亏已经吃掉
-// 全部保证金，再扣一笔手续费必然为负，会凭空造出一笔并不存在的穿仓。
-// 现实中手续费由「强平价到破产价」之间的那段缓冲支付，费后破产价正落在两者之间。
-//
-// 若标记价已越过费后破产价（行情跳空），则按标记价成交——此时找不到更好的
-// 对手价，亏损必然超出保证金，超出部分即真正的穿仓。
-func liquidationFillPx(inst refdata.Instrument, pos Position, m Metrics,
-	takerRate decimal.Decimal) decimal.Decimal {
-
-	q := m.Qty
-	if !q.IsPositive() {
-		return m.MarkPx
-	}
-	taker := takerRate.Abs()
-	one := decimal.NewFromInt(1)
-
-	var fair decimal.Decimal
-	if pos.IsLong() {
-		den := q.Mul(one.Sub(taker))
-		if !den.IsPositive() {
-			return m.MarkPx
-		}
-		fair = div(pos.AvgPx.Mul(q).Sub(pos.Margin), den)
-		if m.MarkPx.LessThan(fair) {
-			return m.MarkPx // 跳空穿过，只能按标记价了结
-		}
-		return fair
-	}
-
-	den := q.Mul(one.Add(taker))
-	fair = div(pos.AvgPx.Mul(q).Add(pos.Margin), den)
-	if m.MarkPx.GreaterThan(fair) {
-		return m.MarkPx
-	}
-	return fair
 }
 
 // reduceToTier 阶梯减仓：把持仓减到目标档位的上限。
@@ -298,9 +262,11 @@ func (s *Simulator) reduceToTier(key positionKey, m Metrics,
 		return s.liquidateFully(key, m, ts)
 	}
 
-	px := liquidationFillPx(inst, pos, m, rate.Taker)
+	px := m.MarkPx
+	nom := notional(inst, cut, px)
 	pnl := realizedPnl(inst, pos.SignedPos(), cut, pos.AvgPx, px)
-	fee := notional(inst, cut, px).Mul(rate.Taker)
+	fee := nom.Mul(rate.Taker.Abs()).Neg()
+	penalty := nom.Mul(m.MMRRate).Neg()
 	// 被减掉的那部分所占用的保证金同比例损失
 	lost := pos.Margin.Mul(div(cut, pos.AbsPos()))
 
@@ -309,6 +275,7 @@ func (s *Simulator) reduceToTier(key positionKey, m Metrics,
 	pos.Margin = pos.Margin.Sub(lost)
 	pos.RealizedPnl = pos.RealizedPnl.Add(pnl)
 	pos.Fee = pos.Fee.Add(fee)
+	pos.LiqPenalty = pos.LiqPenalty.Add(penalty)
 	pos.UTime = ts
 	s.pos[key] = pos
 
@@ -318,7 +285,7 @@ func (s *Simulator) reduceToTier(key positionKey, m Metrics,
 	}
 	return Liquidation{
 		InstID: key.instID, PosSide: key.posSide, Kind: LiqPartial,
-		Sz: cut, Px: px, Pnl: pnl, Fee: fee, Loss: lost,
+		Sz: cut, Px: px, Pnl: pnl, Fee: fee, Penalty: penalty, Loss: lost,
 		MgnRatioBefore: m.MgnRatio, MgnRatioAfter: after.MgnRatio,
 		TierBefore: m.Tier, TierAfter: after.Tier, Ts: ts,
 	}, nil

@@ -120,8 +120,7 @@ func (s *Simulator) Withdraw(ccy string, amt decimal.Decimal) error {
 		return okxerr.New(okxerr.CodeParamError, "amt: 出金金额须为正数，实为 %s", amt)
 	}
 	if s.cash[ccy].LessThan(amt) {
-		return okxerr.New(okxerr.CodeInsufficientBal,
-			"%s 可用余额 %s 不足以出金 %s", ccy, s.cash[ccy], amt)
+		return newShortfallError(ccy, s.cash[ccy], amt, "出金")
 	}
 	s.cash[ccy] = s.cash[ccy].Sub(amt)
 	return nil
@@ -282,9 +281,7 @@ func (s *Simulator) Fill(f Fill) (FillResult, error) {
 		}
 	}
 	if avail.Add(delta).IsNegative() {
-		return FillResult{}, okxerr.New(okxerr.CodeInsufficientBal,
-			"%s 可用余额 %s 不足以支撑本次成交（需 %s）",
-			inst.SettleCcy, avail, delta.Neg())
+		return FillResult{}, newShortfallError(inst.SettleCcy, avail, delta.Neg(), "本次成交")
 	}
 
 	after := res.After
@@ -479,8 +476,7 @@ func (s *Simulator) AdjustMargin(instID string, posSide types.PosSide,
 
 	if op == types.MarginAdd {
 		if s.cash[inst.SettleCcy].LessThan(amt) {
-			return okxerr.New(okxerr.CodeInsufficientBal,
-				"%s 可用余额 %s 不足以追加保证金 %s", inst.SettleCcy, s.cash[inst.SettleCcy], amt)
+			return newShortfallError(inst.SettleCcy, s.cash[inst.SettleCcy], amt, "追加保证金")
 		}
 		s.cash[inst.SettleCcy] = s.cash[inst.SettleCcy].Sub(amt)
 		pos.Margin = pos.Margin.Add(amt)
