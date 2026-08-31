@@ -3,6 +3,7 @@ package refdata
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/dream-until-dawn/okx-position-simulator-go/okxerr"
 	"github.com/dream-until-dawn/okx-position-simulator-go/types"
@@ -125,6 +126,32 @@ func (f *TradeFee) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// MarshalJSON 按 OKX 的线格式输出，使快照中的费率可与真实响应直接比对。
+func (f TradeFee) MarshalJSON() ([]byte, error) {
+	groups := make([]rawFeeGroup, 0, len(f.Groups))
+	for _, g := range f.Groups {
+		groups = append(groups, rawFeeGroup{
+			GroupID: g.GroupID,
+			Maker:   formatDec(g.Maker),
+			Taker:   formatDec(g.Taker),
+		})
+	}
+	return json.Marshal(rawTradeFee{
+		InstType:  f.InstType.String(),
+		Level:     f.Level.String(),
+		Maker:     formatDec(f.Base.Maker),
+		Taker:     formatDec(f.Base.Taker),
+		MakerU:    formatDec(f.U.Maker),
+		TakerU:    formatDec(f.U.Taker),
+		MakerUSDC: formatDec(f.USDC.Maker),
+		TakerUSDC: formatDec(f.USDC.Taker),
+		Delivery:  formatDec(f.Delivery),
+		Exercise:  formatDec(f.Exercise),
+		FeeGroup:  groups,
+		Ts:        formatMillis(f.Ts),
+	})
+}
+
 // Group 返回指定费率组的费率。
 func (f TradeFee) Group(groupID string) (FeeRate, bool) {
 	for _, g := range f.Groups {
@@ -236,6 +263,17 @@ func (s FeeSchedule) WithLevel(lv types.FeeLevel) FeeSchedule {
 		m[k] = v
 	}
 	return FeeSchedule{fees: m}
+}
+
+// instTypesSorted 返回费率表中的产品类型，按固定顺序排列，
+// 使快照的序列化结果逐字节稳定、可做有意义的 diff。
+func (s FeeSchedule) instTypesSorted() []types.InstType {
+	out := make([]types.InstType, 0, len(s.fees))
+	for it := range s.fees {
+		out = append(out, it)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 // String 便于排查问题时查看费率表内容。

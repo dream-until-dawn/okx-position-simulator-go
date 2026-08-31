@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/dream-until-dawn/okx-position-simulator-go/types"
 	"github.com/shopspring/decimal"
@@ -34,6 +35,29 @@ type TierKey struct {
 
 func (k TierKey) String() string {
 	return fmt.Sprintf("%s:%s:%s", k.InstType, k.MgnMode, k.Family)
+}
+
+// ParseTierKey 解析 TierKey.String 产生的文本，用于快照文件的键还原。
+func ParseTierKey(s string) (TierKey, error) {
+	parts := strings.Split(s, ":")
+	if len(parts) != 3 {
+		return TierKey{}, fmt.Errorf("非法的档位表键 %q：应为 产品类型:保证金模式:品种", s)
+	}
+	k := TierKey{
+		InstType: types.InstType(parts[0]),
+		MgnMode:  types.MgnMode(parts[1]),
+		Family:   parts[2],
+	}
+	if !k.InstType.Valid() {
+		return TierKey{}, fmt.Errorf("非法的档位表键 %q：产品类型 %q 无效", s, parts[0])
+	}
+	if !k.MgnMode.Valid() {
+		return TierKey{}, fmt.Errorf("非法的档位表键 %q：保证金模式 %q 无效", s, parts[1])
+	}
+	if k.Family == "" {
+		return TierKey{}, fmt.Errorf("非法的档位表键 %q：品种为空", s)
+	}
+	return k, nil
 }
 
 // PositionTier 是一个档位，字段与 OKX /api/v5/public/position-tiers 的响应对应。
