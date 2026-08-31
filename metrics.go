@@ -25,8 +25,8 @@ type Metrics struct {
 	CloseFee decimal.Decimal // 平仓手续费（正数），参与保证金率的分母
 	Equity   decimal.Decimal // 权益：逐仓为 margin + upl，全仓为所属结算币种的全仓权益
 	MgnRatio decimal.Decimal // 保证金率，≤ 1 触发强平；全仓取所属结算币种的整体值
-	LiqPx    decimal.Decimal // 预估强平价（仅逐仓、仅正向合约）
-	BkPx     decimal.Decimal // 破产价（仅逐仓、仅正向合约）
+	LiqPx    decimal.Decimal // 预估强平价；全仓取所属结算币种的整体值
+	BkPx     decimal.Decimal // 破产价（仅逐仓）
 	BePx     decimal.Decimal // 盈亏平衡价，对应 OKX 的 bePx
 	Tier     int             // 所处档位
 
@@ -42,7 +42,7 @@ type Metrics struct {
 // takerRate 传入费率表中的吃单费率，其符号沿用 OKX 约定（负数表示收取），
 // 本函数内部取绝对值参与计算。
 //
-// 空仓返回零值。反向合约的强平价与破产价暂不计算（见 LiqPx 的说明）。
+// 空仓返回零值。
 func ComputeMetrics(pos Position, inst refdata.Instrument, tier refdata.PositionTier,
 	markPx, takerRate decimal.Decimal) Metrics {
 
@@ -73,9 +73,7 @@ func ComputeMetrics(pos Position, inst refdata.Instrument, tier refdata.Position
 	m.MMR = m.Notional.Mul(tier.MMR)
 	m.CloseFee = m.Notional.Mul(taker)
 
-	if !inst.IsInverse() {
-		m.BePx = breakEvenPx(long, pos.AvgPx, taker)
-	}
+	m.BePx = breakEvenPx(long, pos.AvgPx, taker)
 
 	// 以下三项在全仓下是【结算币种级】的，不属于单个仓位，此处留零，由
 	// Simulator.MetricsOf 从 CrossMetricsOf 填入。OKX 的做法与之呼应：全仓仓位的
@@ -93,10 +91,8 @@ func ComputeMetrics(pos Position, inst refdata.Instrument, tier refdata.Position
 		m.MgnRatio = div(m.Equity, den)
 	}
 
-	if !inst.IsInverse() {
-		m.LiqPx = liquidationPx(inst, long, pos.AvgPx, m.Qty, pos.Margin, tier.MMR, taker)
-		m.BkPx = bankruptcyPx(long, pos.AvgPx, m.Qty, pos.Margin)
-	}
+	m.LiqPx = liquidationPx(inst, long, pos.AvgPx, m.Qty, pos.Margin, tier.MMR, taker)
+	m.BkPx = bankruptcyPx(inst, long, pos.AvgPx, m.Qty, pos.Margin)
 	return m
 }
 
@@ -112,7 +108,7 @@ func ComputeMetrics(pos Position, inst refdata.Instrument, tier refdata.Position
 // 2448.0468234117056，与 OKX 的 bePx 逐位相同；而近似式给出 2448.0456，差 1.2。
 //
 // 手续费一律按吃单费率计——挂单成交实际收的是挂单费率，但 OKX 的 bePx 不区分
-// 成交角色。反向合约暂不计算。
+// 成交角色。**反向合约同式**，已实测：BTC-USD-SWAP 多空两侧与 OKX 差 8e-11。
 func breakEvenPx(long bool, avgPx, taker decimal.Decimal) decimal.Decimal {
 	one := decimal.NewFromInt(1)
 	if long {
@@ -154,10 +150,13 @@ func initialMargin(inst refdata.Instrument, sz, px, lever decimal.Decimal) decim
 func liquidationPx(inst refdata.Instrument, long bool,
 	avgPx, qty, margin, mmrRate, taker decimal.Decimal) decimal.Decimal {
 
-	if qty.IsZero() {
+	if qty.IsZero() || !avgPx.IsPositive() {
 		return decimal.Zero
 	}
 	one := decimal.NewFromInt(1)
+	if inst.IsInverse() {
+		return inverseLiquidationPx(inst, long, avgPx, qty, margin, mmrRate.Add(taker))
+	}
 	if long {
 		den := qty.Mul(one.Sub(mmrRate).Sub(taker))
 		if den.IsZero() {
@@ -172,6 +171,44 @@ func liquidationPx(inst refdata.Instrument, long bool,
 	return div(avgPx.Mul(qty).Add(margin), den).Sub(inst.TickSz)
 }
 
+// inverseLiquidationPx 计算反向合约的强平价。
+//
+// 币本位的名义价值是 Q/px（Q 以计价币计），随价格反比变化，因此解出来的形态与
+// 正向合约是倒数对偶的。由「权益 = 维持保证金 + 平仓手续费」解得：
+//
+//	多  Q × (1 + r) / (margin + Q/avgPx) + tickSz
+//	空  Q × (1 − r) / (Q/avgPx − margin) − tickSz     其中 r = mmr率 + taker
+//
+// 末尾那一个 tickSz 的安全缓冲**反向合约同样有**，方向也一致（朝更早触发的一侧）。
+// 实测 BTC-USD-SWAP 多空各一个仓位，「偏移 ÷ tickSz」分别为 -0.9999999997 与
+// +0.9999999995，补上后残差降到 5e-11。
+//
+// 空头在 Q/avgPx ≤ margin 时返回零：反向空头的最大亏损收敛于 Q/avgPx（价格涨到
+// 无穷时名义价值趋近于零），保证金若已覆盖它，价格再怎么涨也爆不掉。这是币本位
+// 特有的性质，正向合约的空头没有这个上界。
+func inverseLiquidationPx(inst refdata.Instrument, long bool,
+	avgPx, qty, margin, r decimal.Decimal) decimal.Decimal {
+
+	one := decimal.NewFromInt(1)
+	base := div(qty, avgPx)
+	if long {
+		den := margin.Add(base)
+		if !den.IsPositive() {
+			return decimal.Zero
+		}
+		return div(qty.Mul(one.Add(r)), den).Add(inst.TickSz)
+	}
+	den := base.Sub(margin)
+	if !den.IsPositive() {
+		return decimal.Zero
+	}
+	px := div(qty.Mul(one.Sub(r)), den).Sub(inst.TickSz)
+	if !px.IsPositive() {
+		return decimal.Zero
+	}
+	return px
+}
+
 // bankruptcyPx 计算逐仓正向合约的破产价，即权益恰好归零的价格。
 //
 //	多头  avgPx − margin/Q
@@ -179,9 +216,24 @@ func liquidationPx(inst refdata.Instrument, long bool,
 //
 // 它与强平价的区别在于不含维持保证金与手续费，因此比强平价更远。
 // 两者之间的差额正是强平时留给风险准备金的缓冲。
-func bankruptcyPx(long bool, avgPx, qty, margin decimal.Decimal) decimal.Decimal {
+func bankruptcyPx(inst refdata.Instrument, long bool, avgPx, qty, margin decimal.Decimal) decimal.Decimal {
 	if qty.IsZero() {
 		return decimal.Zero
+	}
+	if inst.IsInverse() {
+		// 反向合约同为强平价公式在 r = 0 时的特例
+		if !avgPx.IsPositive() {
+			return decimal.Zero
+		}
+		base := div(qty, avgPx)
+		if long {
+			return div(qty, margin.Add(base))
+		}
+		den := base.Sub(margin)
+		if !den.IsPositive() {
+			return decimal.Zero
+		}
+		return div(qty, den)
 	}
 	d := div(margin, qty)
 	if long {

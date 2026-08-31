@@ -83,11 +83,18 @@ func (s *Simulator) settleFunding(instID string, f Funding, markPx decimal.Decim
 		}
 
 		pos.Funding = pos.Funding.Add(amt)
-		pos.Margin = pos.Margin.Add(amt)
-		if pos.Margin.IsNegative() {
-			// 保证金被资金费吃穿。真实情况下强平会先一步触发，
-			// 此处夹到零并留待风控处理，不让它变成负数污染后续计算。
-			pos.Margin = decimal.Zero
+		// 逐仓的资金费从仓位保证金扣、不动现金，这一条由真实账单确证（balChg 恒为 0）。
+		// 全仓的保证金从未离开现金，仓位上的 Margin 恒为零，资金费只能落在现金余额上——
+		// 若照逐仓的写法扣 Margin，它会被夹零逻辑静默吞掉。
+		if pos.MgnMode == types.MgnCross {
+			s.cash[inst.SettleCcy] = s.cash[inst.SettleCcy].Add(amt)
+		} else {
+			pos.Margin = pos.Margin.Add(amt)
+			if pos.Margin.IsNegative() {
+				// 保证金被资金费吃穿。真实情况下强平会先一步触发，
+				// 此处夹到零并留待风控处理，不让它变成负数污染后续计算。
+				pos.Margin = decimal.Zero
+			}
 		}
 		pos.UTime = ts
 		s.pos[key] = pos

@@ -135,14 +135,15 @@ type MaxSize struct {
 // MaxSize 返回在给定委托价下最多能买入或卖出多少张，对应 OKX 的
 // GET /api/v5/account/max-size。
 //
-// 取价规则经实测标定，七组价格全部命中：
+// 取价规则经实测标定，两类合约各五至七组价格全部命中：
 //
-//	买入  按委托价计算，无论该价格高于还是低于标记价
-//	卖出  在委托价与标记价之间取更保守的一侧，即张数更少的那个
+//	保守的一侧  在委托价与标记价之间取张数更少的那个
+//	另一侧      直接按委托价算，无论它高于还是低于标记价
 //
-// 这个不对称是 OKX 自身的行为而非某条可推导的原理：委托价高于标记价的买单
-// 本会立即以标记价附近成交、所需保证金更少，OKX 仍按委托价计算。
-// 此处照实编码，不去脑补一个统一的解释。
+// 哪一侧保守由合约类型决定，判据见 conservativeSide——正向是卖出，反向是买入。
+// 这不是对称的美学取舍，而是「谁的保证金随不利行情变大」的结果。
+//
+// 全仓还要多扣一项开仓即产生的盯市浮亏，见 crossOpenLoss。
 //
 // 结果已按 lotSz 向下取整。未设置标记价时以委托价代替。
 func (s *Simulator) MaxSize(instID string, tdMode types.TdMode, px decimal.Decimal) (MaxSize, error) {
@@ -185,8 +186,14 @@ func (s *Simulator) MaxSize(instID string, tdMode types.TdMode, px decimal.Decim
 		MaxBuy:  maxSizeAt(inst, bal.AvailBal, px, lever, taker, lossBuy),
 		MaxSell: maxSizeAt(inst, bal.AvailBal, px, lever, taker, lossSell),
 	}
+	// 保守的那一侧还要与按标记价算的结果取较小者，是买是卖取决于合约类型。
 	if markPx.IsPositive() && !markPx.Equal(px) {
-		if byMark := maxSizeAt(inst, bal.AvailBal, markPx, lever, taker,
+		if conservativeSide(inst) == types.Buy {
+			if byMark := maxSizeAt(inst, bal.AvailBal, markPx, lever, taker,
+				lossBuy); byMark.LessThan(m.MaxBuy) {
+				m.MaxBuy = byMark
+			}
+		} else if byMark := maxSizeAt(inst, bal.AvailBal, markPx, lever, taker,
 			lossSell); byMark.LessThan(m.MaxSell) {
 			m.MaxSell = byMark
 		}
@@ -232,9 +239,26 @@ func maxSizeAt(inst refdata.Instrument, avail, px, lever, takerRate,
 func crossOpenLoss(inst refdata.Instrument, side types.Side,
 	px, markPx decimal.Decimal) decimal.Decimal {
 
-	if !markPx.IsPositive() || inst.IsInverse() {
+	if !markPx.IsPositive() || !px.IsPositive() {
 		return decimal.Zero
 	}
+	one := inst.ContractQty(decimal.NewFromInt(1))
+
+	// 反向合约的每张名义价值是 Q/px，故浮亏按倒数之差算。不利的方向不变：
+	// 多头开在高于标记价、空头开在低于标记价，都是一成交就亏。
+	if inst.IsInverse() {
+		var diff decimal.Decimal
+		if side == types.Sell {
+			diff = div(one, px).Sub(div(one, markPx))
+		} else {
+			diff = div(one, markPx).Sub(div(one, px))
+		}
+		if !diff.IsPositive() {
+			return decimal.Zero
+		}
+		return diff
+	}
+
 	diff := px.Sub(markPx)
 	if side == types.Sell {
 		diff = diff.Neg()
@@ -242,7 +266,23 @@ func crossOpenLoss(inst refdata.Instrument, side types.Side,
 	if !diff.IsPositive() {
 		return decimal.Zero
 	}
-	return inst.ContractQty(decimal.NewFromInt(1)).Mul(diff)
+	return one.Mul(diff)
+}
+
+// conservativeSide 返回在 max-size 计算中需要在委托价与标记价之间取保守值的那一侧。
+//
+// 判据是「谁的保证金需求会随着行情往不利方向走而变大」，实测两类合约恰好相反：
+//
+//	正向  名义 = Q×px。空头怕涨，涨则名义涨、保证金涨 —— 空头取保守值
+//	反向  名义 = Q/px。多头怕跌，跌则名义涨、保证金涨 —— 多头取保守值
+//
+// 另一侧直接按委托价算。两类合约各五组价格全部命中，其中偏离标记价 30% 的样本
+// 上两种取法相差 30% 以上，足以区分。
+func conservativeSide(inst refdata.Instrument) types.Side {
+	if inst.IsInverse() {
+		return types.Buy
+	}
+	return types.Sell
 }
 
 // PreviewFill 预演一笔成交，返回它会造成的影响，但不改变任何状态。

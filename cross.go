@@ -201,7 +201,8 @@ func (s *Simulator) CrossMetricsOf(ccy string) (CrossMetrics, error) {
 //	                    交割期各持 7000 张时 OKX 返回空串，而本式仍能解出 0.1449
 //	                    这个看似合理的数——正因为看似合理，才更不能给
 //	解为负              现金相对仓位太厚，价格到不了那里，OKX 同样返回空串
-//	反向合约            inverse 全线公式待 v0.6.0
+//
+// 反向合约走倒数对偶的形态，见 crossInverseLiquidationPx。
 //
 // 挂单不参与计算：末两个快照上挂着一笔 5000 张的委托，OKX 给出的强平价与没挂单时
 // 逐位相同。
@@ -209,6 +210,7 @@ func (s *Simulator) crossLiquidationPx(ccy string) (decimal.Decimal, error) {
 	var num, den decimal.Decimal
 	only := ""
 
+	inverse := false
 	for _, p := range s.pos {
 		if p.MgnMode != types.MgnCross {
 			continue
@@ -220,11 +222,8 @@ func (s *Simulator) crossLiquidationPx(ccy string) (decimal.Decimal, error) {
 		if inst.SettleCcy != ccy {
 			continue
 		}
-		if inst.IsInverse() {
-			return decimal.Zero, nil
-		}
 		if only == "" {
-			only = p.InstID
+			only, inverse = p.InstID, inst.IsInverse()
 		} else if only != p.InstID {
 			return decimal.Zero, nil
 		}
@@ -242,13 +241,42 @@ func (s *Simulator) crossLiquidationPx(ccy string) (decimal.Decimal, error) {
 		if p.SignedPos().IsNegative() || p.PosSide == types.PosShort {
 			signed = qty.Neg()
 		}
+		r := tier.MMR.Add(rate.Taker.Abs())
+		if inverse {
+			// 反向：分子累加 Σ sQ + Σ Q·r，分母累加 Σ sQ/avgPx
+			num = num.Add(signed).Add(qty.Mul(r))
+			if !p.AvgPx.IsPositive() {
+				return decimal.Zero, nil
+			}
+			den = den.Add(div(signed, p.AvgPx))
+			continue
+		}
 		num = num.Add(signed.Mul(p.AvgPx))
-		den = den.Add(signed).Sub(qty.Mul(tier.MMR.Add(rate.Taker.Abs())))
+		den = den.Sub(qty.Mul(r)).Add(signed)
 	}
-	if only == "" || den.IsZero() {
+	if only == "" {
 		return decimal.Zero, nil
 	}
-	px := div(num.Sub(s.cash[ccy]), den)
+
+	// 反向合约是倒数对偶的形态，由同一条「权益 = 维持保证金 + 平仓费」解出：
+	//
+	//	正向  P = (Σ sQ·avgPx − 现金) / (Σ sQ − Σ Q·r)
+	//	反向  P = (Σ sQ + Σ Q·r) / (现金 + Σ sQ/avgPx)
+	//
+	// 实测 BTC-USD-SWAP 全仓多头，本式与 OKX 差 6.3e-13，且同样没有 tickSz 缓冲。
+	var px decimal.Decimal
+	if inverse {
+		d := s.cash[ccy].Add(den)
+		if !d.IsPositive() {
+			return decimal.Zero, nil
+		}
+		px = div(num, d)
+	} else {
+		if den.IsZero() {
+			return decimal.Zero, nil
+		}
+		px = div(num.Sub(s.cash[ccy]), den)
+	}
 	if !px.IsPositive() {
 		return decimal.Zero, nil
 	}
