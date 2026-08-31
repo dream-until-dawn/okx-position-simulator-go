@@ -31,10 +31,15 @@ type Position struct {
 	Lever  decimal.Decimal // 杠杆
 	Margin decimal.Decimal // 逐仓已划入的保证金；全仓恒为零
 
-	// 以下为累计量，供对账与统计，不参与风险计算
-	RealizedPnl decimal.Decimal // 累计已实现盈亏
+	// 以下为累计量，供对账与统计，不参与风险计算。
+	//
+	// RealizedPnl 是【毛】已实现盈亏，不含手续费、资金费与爆仓罚金。
+	// 注意 OKX 的 realizedPnl 字段是【净】额，与此不同——要取与 OKX 同口径的值
+	// 请用 NetRealizedPnl。
+	RealizedPnl decimal.Decimal // 累计毛已实现盈亏
 	Fee         decimal.Decimal // 累计手续费，负数表示已收取
 	Funding     decimal.Decimal // 累计资金费，负数表示已支付
+	LiqPenalty  decimal.Decimal // 累计爆仓罚金，负数表示已收取
 
 	CTime int64 // 仓位建立时刻（毫秒）
 	UTime int64 // 最后变动时刻（毫秒）
@@ -61,6 +66,20 @@ func (p Position) IsShort() bool { return p.SignedPos().IsNegative() }
 
 // AbsPos 返回持仓张数的绝对值，用于查档与计算名义价值。
 func (p Position) AbsPos() decimal.Decimal { return p.Pos.Abs() }
+
+// NetRealizedPnl 返回与 OKX realizedPnl 字段同口径的净已实现盈亏。
+//
+//	净额 = 毛已实现盈亏 + 累计手续费 + 累计资金费 + 累计爆仓罚金
+//
+// 该式由真实数据确证：一个持有七周的仓位，pnl=182.04988519038076、
+// fee=-10.066836395、fundingFee=-75.53442700159925、liqPenalty=0，
+// 四者相加恰为 OKX 给出的 realizedPnl=96.44862179378151，差值为 0。
+//
+// 字段名容易误导——单看 realizedPnl 会以为是毛盈亏，实际它已经把成本都扣掉了。
+// 把毛额填进这个字段，长期持仓的对账会差出全部的手续费与资金费。
+func (p Position) NetRealizedPnl() decimal.Decimal {
+	return p.RealizedPnl.Add(p.Fee).Add(p.Funding).Add(p.LiqPenalty)
+}
 
 // Fill 是一笔成交。
 //
@@ -267,4 +286,12 @@ func realizedPnl(inst refdata.Instrument, cur, closeSz, avgPx, closePx decimal.D
 		diff = diff.Neg()
 	}
 	return q.Mul(diff)
+}
+
+// IsMultipleOfLot 报告张数是否为数量精度的整数倍。
+//
+// 转发到 refdata.IsMultipleOf，使调用方校验自己持有的仓位状态时不必额外引入
+// refdata 包。
+func IsMultipleOfLot(sz, lotSz decimal.Decimal) bool {
+	return refdata.IsMultipleOf(sz, lotSz)
 }

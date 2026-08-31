@@ -345,3 +345,38 @@ func TestFillSzVsAccFillSz(t *testing.T) {
 	}
 	t.Logf("字段陷阱确认: fillSz=%s（最新一笔） accFillSz=%s（累计）", fillSz, accFillSz)
 }
+
+// TestNetRealizedPnlMatchesOKXSemantics OKX 的 realizedPnl 是净额，
+// 不是毛已实现盈亏。
+//
+// 该式由真实数据确证：一个持有七周的仓位，pnl=182.04988519038076、
+// fee=-10.066836395、fundingFee=-75.53442700159925、liqPenalty=0，
+// 四者相加恰为 OKX 给出的 realizedPnl=96.44862179378151，差值为 0。
+//
+// 字段名容易误导——单看 realizedPnl 会以为是毛盈亏。把毛额填进去，
+// 长期持仓的对账会差出全部的手续费与资金费。
+func TestNetRealizedPnlMatchesOKXSemantics(t *testing.T) {
+	fx := loadFixture(t, "close-long-isolated-linear.json")
+	p := fx.PositionBefore
+	str := func(k string) string {
+		v, _ := p[k].(string)
+		return v
+	}
+	if str("realizedPnl") == "" {
+		t.Skip("夹具里没有 realizedPnl")
+	}
+
+	pos := Position{
+		RealizedPnl: dec(str("pnl")),
+		Fee:         dec(str("fee")),
+		Funding:     dec(str("fundingFee")),
+		LiqPenalty:  dec(str("liqPenalty")),
+	}
+	near(t, pos.NetRealizedPnl(), dec(str("realizedPnl")), "1e-9", "净已实现盈亏")
+
+	// 毛额与净额必须明显不同，否则这条测试没有区分力
+	if pos.RealizedPnl.Sub(pos.NetRealizedPnl()).Abs().LessThan(dec("1")) {
+		t.Fatal("该样本的毛额与净额过于接近，无法区分两种口径")
+	}
+	t.Logf("毛 %s，净 %s（OKX %s）", pos.RealizedPnl, pos.NetRealizedPnl(), str("realizedPnl"))
+}

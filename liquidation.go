@@ -207,6 +207,11 @@ func (s *Simulator) liquidateFully(key positionKey, m Metrics, ts int64) (Liquid
 
 	pos.RealizedPnl = pos.RealizedPnl.Add(pnl)
 	pos.Fee = pos.Fee.Add(fee)
+	// 保证金里未被盈亏与手续费消耗掉的残余归风险准备金，记为爆仓罚金——
+	// 这正是 OKX 仓位结构中 liqPenalty 一项的来源。按费后破产价了结时它恰为零。
+	if resid := pos.Margin.Add(pnl).Add(fee); resid.IsPositive() {
+		pos.LiqPenalty = pos.LiqPenalty.Sub(resid)
+	}
 	pos.Pos = decimal.Zero
 	pos.AvgPx = decimal.Zero
 	pos.Margin = decimal.Zero

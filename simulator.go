@@ -499,3 +499,55 @@ func (s *Simulator) AdjustMargin(instID string, posSide types.PosSide,
 	s.pos[key] = pos
 	return nil
 }
+
+// SetPosition 直接置入一个仓位，用于从既有状态恢复。
+//
+// 这是「状态即纯数据」这一设计的兑现：仓位不含任何隐藏状态，因此可以整体存下、
+// 再整体放回。回测引擎做参数扫描、断点续跑或事件重放时需要它。
+//
+// 它也是对拍工具的必需品。按开仓均价重放一笔成交只能复现持仓与保证金，
+// 复现不了累计手续费、累计资金费这类历史量——均价是加权结果，从它反推不出
+// 之前发生过哪些成交。要把一个真实账户的仓位原样搬进模拟器，只能整体置入。
+//
+// 传入空仓（Pos 为零）等同于删除该仓位。
+func (s *Simulator) SetPosition(p Position) error {
+	if p.InstID == "" {
+		return okxerr.New(okxerr.CodeParamEmpty, "instId 不能为空")
+	}
+	inst, err := s.cfg.RefData.Instrument(p.InstID)
+	if err != nil {
+		return err
+	}
+	if p.MgnMode == "" {
+		p.MgnMode = types.MgnIsolated
+	}
+	if !p.MgnMode.Valid() {
+		return okxerr.New(okxerr.CodeParamError, "mgnMode: 非法的保证金模式 %q", p.MgnMode)
+	}
+	side, err := s.normalizePosSide(p.PosSide)
+	if err != nil {
+		return err
+	}
+	p.PosSide = side
+
+	key := positionKey{p.InstID, side}
+	if p.Pos.IsZero() {
+		delete(s.pos, key)
+		return nil
+	}
+	if !IsMultipleOfLot(p.Pos, inst.LotSz) {
+		return okxerr.New(okxerr.CodeNotLotSizeMultiple,
+			"%s: 持仓张数 %s 不是数量精度 %s 的整数倍", p.InstID, p.Pos, inst.LotSz)
+	}
+	if !p.AvgPx.IsPositive() {
+		return okxerr.New(okxerr.CodeParamError, "avgPx: 开仓均价须为正数，实为 %s", p.AvgPx)
+	}
+	if !p.Lever.IsPositive() {
+		p.Lever = s.Leverage(p.InstID, p.MgnMode, side)
+	}
+	if p.Margin.IsNegative() {
+		return okxerr.New(okxerr.CodeParamError, "margin: 保证金不能为负，实为 %s", p.Margin)
+	}
+	s.pos[key] = p
+	return nil
+}
