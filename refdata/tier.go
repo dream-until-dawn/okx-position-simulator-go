@@ -22,11 +22,18 @@ var ErrEmptyTierTable = errors.New("档位表为空")
 
 // TierKey 是档位表的聚合键。
 //
-// 衍生品的档位按 instFamily 聚合，而不是按 instId —— 全仓模式下同一 instFamily
-// 的多个合约（永续与各期交割）持仓必须合并后再查档位。这是 OKX 规则中最容易被
-// 第三方实现搞错的一点，因此在类型层面就把 instFamily 定为聚合键，避免误用 instId。
+// 三个字段缺一不可，且都由实测确定：
 //
-// 逐仓与全仓是两张独立的档位表，故 MgnMode 也是键的一部分。
+//	Family    档位按 instFamily 聚合而非 instId —— 全仓模式下同一品种同一产品类型
+//	          的多个合约（各期交割）持仓必须合并后再查档。这是 OKX 规则中最容易被
+//	          第三方实现搞错的一点，故在类型层面就把它定为聚合键，避免误用 instId
+//	InstType  同一 instFamily 下的永续与交割**不共用一张表**。实测 GRASS-USDT 的
+//	          永续 ctVal=10、一档上限 10000 张（合 100000 标的币）、mmr 0.02、
+//	          杠杆≤20；交割 ctVal=1、一档上限 12500 张（合 12500 标的币）、
+//	          mmr 0.01、杠杆≤50。名义口径、维持保证金率、杠杆上限三项全不相同，
+//	          不可能是同一条阶梯的两种表述，因此两者的持仓也不合并查档
+//	MgnMode   逐仓与全仓是两张独立的表。两种模式的查档口径也不同：全仓按家族合并，
+//	          逐仓每个仓位单独查（同一 instId 的多空也各查各的）
 type TierKey struct {
 	InstType types.InstType
 	MgnMode  types.MgnMode
