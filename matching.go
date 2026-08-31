@@ -81,10 +81,11 @@ type PlaceResult struct {
 
 // StepResult 是推进一步行情的结果。
 type StepResult struct {
-	Ts       int64
-	Fundings []FundingResult
-	Fills    []FillResult
-	Canceled []string // 本步被撤销的委托，如资金不足以承接成交
+	Ts           int64
+	Fundings     []FundingResult
+	Fills        []FillResult
+	Liquidations []Liquidation
+	Canceled     []string // 本步被撤销的委托，如资金不足以承接成交
 }
 
 // LastPx 返回某合约当前的最新成交价；未推进过行情则返回零值。
@@ -259,8 +260,9 @@ func (s *Simulator) fillOrder(o Order, px decimal.Decimal,
 // 同一步内多笔可成交时按下单先后处理，与真实的时间优先一致；同一时刻下的
 // 委托按委托 ID 排序，使结果可复现。
 //
-// 一步之内的执行顺序是确定的：资金费结算 -> 撮合。强平检查将在同一方法内
-// 接在撮合之后，因为它要看的是本步全部变动落定后的风险状况。
+// 一步之内的执行顺序是确定的：资金费结算 -> 撮合 -> 强平检查。
+// 强平排在最后，因为它要看的是本步全部变动落定后的风险状况：资金费扣过了、
+// 该成交的成交了，此刻的保证金率才是真实的。
 func (s *Simulator) Advance(b Bar) (StepResult, error) {
 	if b.InstID == "" {
 		return StepResult{}, okxerr.New(okxerr.CodeParamEmpty, "instId 不能为空")
@@ -306,6 +308,17 @@ func (s *Simulator) Advance(b Bar) (StepResult, error) {
 			continue
 		}
 		res.Fills = append(res.Fills, fr)
+	}
+
+	// 强平检查排在最后：它要看的是本步全部变动落定后的风险状况——
+	// 资金费扣过了、该成交的成交了，此刻的保证金率才是真实的。
+	liqs, err := s.checkLiquidation(b.InstID, b.Ts)
+	if err != nil {
+		return StepResult{}, err
+	}
+	res.Liquidations = liqs
+	for _, l := range liqs {
+		res.Canceled = append(res.Canceled, l.CanceledOrders...)
 	}
 	return res, nil
 }

@@ -27,6 +27,12 @@ type Metrics struct {
 	LiqPx    decimal.Decimal // 预估强平价（仅逐仓、仅正向合约）
 	BkPx     decimal.Decimal // 破产价（仅逐仓、仅正向合约）
 	Tier     int             // 所处档位
+
+	// HasPosition 报告这组指标是否来自一个真实存在的仓位。
+	//
+	// 不能拿 MgnRatio 是否为零来代替它：权益被亏损或资金费耗尽时保证金率同样是
+	// 零，而那恰恰是最该强平的时刻。二者混为一谈会让爆到穿仓的仓位反而爆不掉。
+	HasPosition bool
 }
 
 // ComputeMetrics 计算逐仓仓位在给定标记价下的风险指标。
@@ -42,6 +48,7 @@ func ComputeMetrics(pos Position, inst refdata.Instrument, tier refdata.Position
 	if pos.IsEmpty() || markPx.IsZero() {
 		return m
 	}
+	m.HasPosition = true
 
 	taker := takerRate.Abs()
 	signed := pos.SignedPos()
@@ -149,10 +156,14 @@ func bankruptcyPx(long bool, avgPx, qty, margin decimal.Decimal) decimal.Decimal
 	return avgPx.Add(d)
 }
 
-// IsLiquidatable 报告该保证金率是否已触及强平线。
+// IsLiquidatable 报告该仓位是否已触及强平线。
 //
 // OKX 的口径是保证金率 ≤ 100%，而 mgnRatio 字段以倍数表示（1 即 100%）。
 // 实测一个健康的五倍杠杆浮盈仓位其 mgnRatio 为 89.03，即 8903%。
+//
+// 判据里必须带上 HasPosition：保证金率为零既可能是「没有仓位」，也可能是
+// 「权益已被耗尽」，后者恰恰最该强平。早先只用 MgnRatio 非零来排除空仓，
+// 结果是被资金费耗穿的仓位反而爆不掉。
 func (m Metrics) IsLiquidatable() bool {
-	return !m.MgnRatio.IsZero() && m.MgnRatio.LessThanOrEqual(decimal.NewFromInt(1))
+	return m.HasPosition && m.MgnRatio.LessThanOrEqual(decimal.NewFromInt(1))
 }
