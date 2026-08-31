@@ -50,6 +50,7 @@ type Fetcher struct {
 	userAgent   string
 	client      *http.Client
 	minInterval time.Duration
+	simulated   bool
 	last        time.Time
 }
 
@@ -67,6 +68,22 @@ func WithUserAgent(ua string) Option { return func(f *Fetcher) { f.userAgent = u
 
 // WithMinInterval 调整相邻请求的最小间隔；传入非正值表示不限速。
 func WithMinInterval(d time.Duration) Option { return func(f *Fetcher) { f.minInterval = d } }
+
+// WithSimulated 指向 OKX 的模拟盘环境（请求带 x-simulated-trading: 1）。
+//
+// 这不是可有可无的开关：**模拟盘与生产环境的规则数据并不相同**，实测差异包括
+//
+//	BTC-USDT-SWAP   tickSz  生产 0.1     模拟盘 0.01
+//	DOGE-USDT-SWAP  tickSz  生产 0.00001 模拟盘 0.0000001
+//	YFI-USDT-SWAP   lever   生产 20      模拟盘 50
+//	BTC-USD-SWAP    lever   生产 100     模拟盘 125
+//	BTC-USDT 档位表  区间上界模拟盘是生产的 10 倍，99 档全部不同
+//	BTC-USD  档位表  档位数 99 vs 100，imr 与 maxLever 亦不同
+//
+// 因此对拍工具必须从它所交易的同一环境拉取规则数据。若拿生产快照去对拍模拟盘，
+// 每一个依赖档位、价格精度或杠杆的计算都会偏，而偏差看起来像是模拟器自身的
+// 缺陷——那会把大量时间浪费在追查根本不存在的问题上。
+func WithSimulated(v bool) Option { return func(f *Fetcher) { f.simulated = v } }
 
 // NewFetcher 新建拉取器。
 func NewFetcher(opts ...Option) *Fetcher {
@@ -117,6 +134,9 @@ func (f *Fetcher) get(ctx context.Context, path string, query url.Values) ([]byt
 	}
 	req.Header.Set("User-Agent", f.userAgent)
 	req.Header.Set("Accept", "application/json")
+	if f.simulated {
+		req.Header.Set("x-simulated-trading", "1")
+	}
 
 	resp, err := f.client.Do(req)
 	if err != nil {

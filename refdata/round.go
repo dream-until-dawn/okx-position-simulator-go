@@ -11,13 +11,9 @@ import (
 
 // ErrPriceNotTickMultiple 表示价格不是 tickSz 的整数倍。
 //
-// 该规则的真实行为尚未定论：对模拟盘的探测中，一笔远离市价、价格为 10000.05
-// 而 tickSz 为 0.1 的限价买单被 OKX 接受，且 px 被原样存储而非取整；近市价的
-// 复验因账户可用余额不足而被提前拦截，未能取得结论。
-//
-// 因此本包不默认强制该校验——ValidateSize 不会检查价格，需要严格模式的调用方
-// 显式调用 ValidatePriceTick。待模拟盘账户有充足资金后于 v0.2.0 对拍时定论，
-// 届时若确认 OKX 会拒绝，再为其补上真实错误码。
+// 它只用于 ValidatePriceTick 这个诊断用途，模拟器主路径不会产生该错误——
+// 实测确认 OKX 从不拒绝超精度价格，而是按方向取整后接受（详见 RoundPrice）。
+// 因此它没有对应的 OKX 错误码，也不该被当成「OKX 会这样报错」来使用。
 var ErrPriceNotTickMultiple = errors.New("价格不是 tickSz 的整数倍")
 
 // IsMultipleOf 报告 v 是否为 step 的整数倍；step 为零时恒为真。
@@ -59,7 +55,17 @@ func (i Instrument) RoundSize(sz decimal.Decimal) decimal.Decimal {
 
 // RoundPrice 按买卖方向把价格取整到 tickSz 的整数倍：买单向下、卖单向上。
 //
-// 两个方向都朝着「对下单方更不利」的一侧取整，因而不会凭空制造出更优的成交价。
+// 该行为经模拟盘实测确认与 OKX 一致。以 tickSz 为 0.1 的合约为例：
+//
+//	买单  2150.51 / 2150.55 / 2150.59  ->  2150.5   向下截断
+//	卖单  2376.91 / 2376.95 / 2376.99  ->  2377     向上进位
+//
+// 两个方向都是朝远离市价的一侧移动，即让委托变得更不激进，
+// 不会凭空提高成交概率或制造出更优的成交价。
+//
+// 这是模拟器处理价格精度的正道：OKX 从不因超精度而拒单，只做取整。
+// 若改为强制校验并拒单，模拟器会拒掉真实 OKX 会接受的订单，
+// 回测中凭空少掉成交——那与还原真实行为的目标正好相反。
 func (i Instrument) RoundPrice(px decimal.Decimal, side types.Side) decimal.Decimal {
 	if side == types.Buy {
 		return FloorToStep(px, i.TickSz)
@@ -111,8 +117,12 @@ func (i Instrument) ValidateOrderSize(sz decimal.Decimal, ordType types.OrdType)
 
 // ValidatePriceTick 校验价格是否为 tickSz 的整数倍。
 //
-// 该校验不被 ValidateSize 或 ValidateOrderSize 调用，需要严格模式的调用方
-// 显式使用。原因见 ErrPriceNotTickMultiple 的说明。
+// 这是一个**诊断工具**，不是模拟真实行为的一环：OKX 不会因价格超精度而拒单，
+// 因此模拟器主路径走的是 RoundPrice 而非本方法。
+//
+// 它的用途是让使用者主动自查——策略若在下超精度的价格，说明其价格计算与合约
+// 精度不匹配，虽然 OKX 会替它取整，但策略自己算出的预期成交价会与实际有偏差。
+// 需要时显式调用。
 func (i Instrument) ValidatePriceTick(px decimal.Decimal) error {
 	if !px.IsPositive() {
 		return okxerr.New(okxerr.CodeParamError, "px: 价格须为正数，实为 %s", px)

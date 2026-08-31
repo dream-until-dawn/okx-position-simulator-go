@@ -164,16 +164,24 @@ func (f TradeFee) Group(groupID string) (FeeRate, bool) {
 
 // Rate 返回某个合约适用的挂单/吃单费率。
 //
-// 按结算币种在 Base / U / USDC 三组之间选择：USDT 保证金走 U 组，
-// USDC 保证金走 USDC 组，币本位合约走 Base 组；对应组为零值时回落到 Base。
+// 解析顺序为**费率组优先**：
 //
-// 合约规格里的 groupId 指向费率表的 feeGroup，本方法目前不参与该维度的解析。
-// 原因是无法从数据中判定「费率组」与「结算币种变体」的优先级：实测全部 459 个
-// 永续合约的 groupId 均为 4，且 SWAP 费率表 1..7 组与 maker/taker/makerU/takerU
-// 的取值完全一致，两条路径给出同一个数字，无从区分。现货各组费率差异显著，
-// 说明该维度确实生效，故 Groups 已完整保留，可经 Group 单独查询。
-// 该优先级待 v0.2.0 对拍时定论，在此之前不臆造规则。
+//  1. 合约规格里的 groupId 能在费率表的 feeGroup 中匹配到，就用该组的费率
+//  2. 否则按结算币种选择：USDT 保证金走 U 组，USDC 保证金走 USDC 组，
+//     币本位合约走 Base 组
+//  3. 对应组为零值时回落到 Base
+//
+// 这个优先级无法从数据中判定——实测全部 459 个永续合约的 groupId 均为 4，
+// 且 SWAP 费率表 1..7 组与 maker/taker/makerU/takerU 的取值完全一致，
+// 两条路径给出同一个数字。因此它是使用者拍板的决定，而非实测结论。
+//
+// 支持这个选择的依据：现货各费率组差异显著（组 3 taker 0.22%、组 8 是 0.4%、
+// 组 11 免费），说明费率组是 OKX 用来做精细区分的维度；而结算币种变体更像是
+// 面向整类合约的默认值。精细者优先是合理的读法。
 func (f TradeFee) Rate(inst Instrument) FeeRate {
+	if r, ok := f.Group(inst.GroupID); ok {
+		return r
+	}
 	switch inst.SettleCcy {
 	case "USDT":
 		if !f.U.IsZero() {
@@ -239,6 +247,11 @@ func (s FeeSchedule) Rate(inst Instrument) (FeeRate, error) {
 // 供使用者指定自己的实际费率——协议费率、活动折扣、OKB 抵扣后的净费率都无法
 // 从公开数据推导，只能由使用者给出。传入的 FeeRate 沿用 OKX 的符号约定：
 // 负数表示收取。
+//
+// 覆盖是彻底的：Base、U、USDC 与全部费率组都会被替换成 r，因此无论 Rate 走
+// 哪条解析路径，结果都是 r。仅替换前三者是不够的——Rate 以费率组优先，
+// 漏掉费率组会让使用者显式设置的费率被静默忽略而用回 OKX 的默认值，
+// 那是会在回测里直接算错钱的。费率组的编号予以保留，仅数值被替换。
 func (s FeeSchedule) WithRate(instType types.InstType, r FeeRate) FeeSchedule {
 	m := make(map[types.InstType]TradeFee, len(s.fees)+1)
 	for k, v := range s.fees {
@@ -247,6 +260,13 @@ func (s FeeSchedule) WithRate(instType types.InstType, r FeeRate) FeeSchedule {
 	f := m[instType]
 	f.InstType = instType
 	f.Base, f.U, f.USDC = r, r, r
+
+	groups := make([]FeeGroup, len(f.Groups))
+	for i, g := range f.Groups {
+		groups[i] = FeeGroup{GroupID: g.GroupID, FeeRate: r}
+	}
+	f.Groups = groups
+
 	m[instType] = f
 	return FeeSchedule{fees: m}
 }

@@ -71,8 +71,7 @@ func TestFeeRateOfExecType(t *testing.T) {
 	}
 }
 
-// TestFeeGroupsPreserved 费率组不参与 Rate 的解析，但必须完整保留，
-// 因为现货各组费率差异显著，说明该维度确实生效。
+// TestFeeGroupsPreserved 费率组必须完整保留并可单独查询。
 func TestFeeGroupsPreserved(t *testing.T) {
 	f := loadSwapFee(t)
 
@@ -91,26 +90,74 @@ func TestFeeGroupsPreserved(t *testing.T) {
 	}
 }
 
-// TestSwapAllInstrumentsShareOneGroup 守卫 Rate 不解析 groupId 这一决定所依赖的前提。
+// TestSwapFeePathsCurrentlyAgree 记录一个事实：对永续而言，费率组与结算币种变体
+// 两条解析路径当前给出同一个数字，因此优先级的选择在现有数据上不可观测。
 //
-// 若将来永续合约出现多个费率组、或各组费率不再一致，该前提失效，
-// Rate 必须补上费率组维度的解析。
-func TestSwapAllInstrumentsShareOneGroup(t *testing.T) {
+// Rate 采用「费率组优先」是使用者拍板的决定，而非实测结论。这条测试不是要固定
+// 该选择，而是要在两条路径开始分歧时发出信号——那时优先级才真正产生影响，
+// 需要重新用真实成交去验证选对了没有。
+func TestSwapFeePathsCurrentlyAgree(t *testing.T) {
 	f := loadSwapFee(t)
 
 	base := f.Groups[0].FeeRate
 	for _, g := range f.Groups {
 		if !g.Maker.Equal(base.Maker) || !g.Taker.Equal(base.Taker) {
 			t.Errorf("永续费率组 %s 与组 %s 费率不同（maker %s vs %s，taker %s vs %s），"+
-				"Rate 需要补上费率组维度的解析",
+				"优先级开始产生影响，需用真实成交重新验证",
 				g.GroupID, f.Groups[0].GroupID, g.Maker, base.Maker, g.Taker, base.Taker)
 		}
 	}
-	// 各组费率还应与 maker/taker、makerU/takerU 一致，两条路径才能给出同一个数字
 	if !base.Taker.Equal(f.Base.Taker) || !base.Taker.Equal(f.U.Taker) {
-		t.Errorf("费率组 taker(%s) 与 taker(%s)、takerU(%s) 不一致",
+		t.Errorf("费率组 taker(%s) 与 taker(%s)、takerU(%s) 已分歧，"+
+			"「费率组优先」的选择开始产生实际影响，需用真实成交验证",
 			base.Taker, f.Base.Taker, f.U.Taker)
 	}
+}
+
+// TestFeeGroupTakesPriority 费率组优先于结算币种变体。
+//
+// 构造一份两条路径给出不同数字的费率表——真实数据中它们恰好一致，
+// 不构造就测不出优先级。
+func TestFeeGroupTakesPriority(t *testing.T) {
+	fee := TradeFee{
+		InstType: types.InstSwap,
+		Level:    types.Lv1,
+		Base:     FeeRate{Maker: dec(t, "-0.0002"), Taker: dec(t, "-0.0005")},
+		U:        FeeRate{Maker: dec(t, "-0.0003"), Taker: dec(t, "-0.0006")},
+		Groups: []FeeGroup{
+			{GroupID: "4", FeeRate: FeeRate{Maker: dec(t, "-0.0001"), Taker: dec(t, "-0.0004")}},
+		},
+	}
+	s := NewFeeSchedule(fee)
+
+	// groupId 命中费率组：应当用组费率，而不是 USDT 结算对应的 U 组
+	inst := Instrument{InstType: types.InstSwap, SettleCcy: "USDT", GroupID: "4"}
+	r, err := s.Rate(inst)
+	if err != nil {
+		t.Fatalf("查询费率失败: %v", err)
+	}
+	eq(t, r.Taker, "-0.0004", "命中费率组时的 taker")
+
+	// groupId 匹配不上：回落到结算币种变体
+	inst.GroupID = "99"
+	if r, err = s.Rate(inst); err != nil {
+		t.Fatalf("查询费率失败: %v", err)
+	}
+	eq(t, r.Taker, "-0.0006", "未命中费率组时回落到 U 组的 taker")
+
+	// groupId 为空同样回落
+	inst.GroupID = ""
+	if r, err = s.Rate(inst); err != nil {
+		t.Fatalf("查询费率失败: %v", err)
+	}
+	eq(t, r.Taker, "-0.0006", "groupId 为空时回落到 U 组的 taker")
+
+	// 币本位无 U 组适用，回落到 Base
+	inv := Instrument{InstType: types.InstSwap, SettleCcy: "BTC", GroupID: "99"}
+	if r, err = s.Rate(inv); err != nil {
+		t.Fatalf("查询费率失败: %v", err)
+	}
+	eq(t, r.Taker, "-0.0005", "币本位回落到 Base 的 taker")
 }
 
 func TestFeeScheduleRateBySettleCcy(t *testing.T) {
@@ -161,6 +208,22 @@ func TestFeeScheduleWithRateIsImmutable(t *testing.T) {
 		t.Fatalf("查询原费率失败: %v", err)
 	}
 	eq(t, origRate.Taker, "-0.0005", "原表 taker 不应被改动")
+
+	// 覆盖必须彻底：Rate 以费率组优先，若只替换 Base/U/USDC 而漏掉费率组，
+	// 使用者显式设置的费率会被静默忽略，回测里直接算错钱。
+	df, ok := derived.TradeFee(types.InstSwap)
+	if !ok {
+		t.Fatal("覆盖后缺少 SWAP 费率")
+	}
+	for _, g := range df.Groups {
+		if !g.Taker.Equal(custom.Taker) || !g.Maker.Equal(custom.Maker) {
+			t.Errorf("费率组 %s 未被覆盖: maker=%s taker=%s，期望 maker=%s taker=%s",
+				g.GroupID, g.Maker, g.Taker, custom.Maker, custom.Taker)
+		}
+	}
+	if len(df.Groups) == 0 {
+		t.Error("覆盖后费率组被清空，应保留编号仅替换数值")
+	}
 }
 
 func TestFeeScheduleWithLevelKeepsRates(t *testing.T) {

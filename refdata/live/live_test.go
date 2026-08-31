@@ -520,3 +520,34 @@ func TestProviderConcurrentRefreshAndRead(t *testing.T) {
 		t.Error("并发结束后 Version 仍为 0")
 	}
 }
+
+// TestWithSimulatedSetsHeader 模拟盘标识必须落到请求头上。
+//
+// 这条测试的分量比它看起来重：模拟盘与生产环境的规则数据不同（档位区间、tickSz、
+// 杠杆上限均有实测差异），对拍工具若因为漏了这个头而拿到生产数据，
+// 每个计算都会偏，且偏差看起来像模拟器自身的缺陷。
+func TestWithSimulatedSetsHeader(t *testing.T) {
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Header.Get("x-simulated-trading"))
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"code":"0","msg":"","data":[]}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	sim := NewFetcher(WithBaseURL(srv.URL), WithMinInterval(0), WithSimulated(true))
+	if _, err := sim.Instruments(context.Background(), types.InstSwap); err != nil {
+		t.Fatalf("拉取失败: %v", err)
+	}
+	if len(got) != 1 || got[0] != "1" {
+		t.Errorf("模拟盘请求的 x-simulated-trading = %v，期望 \"1\"", got)
+	}
+
+	prod := NewFetcher(WithBaseURL(srv.URL), WithMinInterval(0))
+	if _, err := prod.Instruments(context.Background(), types.InstSwap); err != nil {
+		t.Fatalf("拉取失败: %v", err)
+	}
+	if len(got) != 2 || got[1] != "" {
+		t.Errorf("生产请求不应带 x-simulated-trading，实际 %v", got)
+	}
+}
