@@ -294,3 +294,12 @@ func TestWithdraw(t *testing.T) {
 		t.Errorf("超额出金的错误 = %v，期望 51008", err)
 	}
 }
+
+func mustEmbedded(t *testing.T) *refdata.Snapshot {
+	t.Helper()
+	s, err := refdata.Embedded()
+	if err != nil {
+		t.Fatalf("载入内置快照失败: %v", err)
+	}
+	return s
+}

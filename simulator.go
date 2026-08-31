@@ -403,3 +403,64 @@ func (s *Simulator) Balances() ([]Balance, error) {
 	}
 	return out, nil
 }
+
+// AdjustMargin 增减逐仓保证金，对应 OKX 的
+// POST /api/v5/account/position/margin-balance。
+//
+// 资金在现金余额与仓位保证金之间一比一划转，经实测确认：追加 200 时现金减少
+// 200、保证金增加 200，杠杆设置不变，强平价随之远离（62772 -> 57750）。
+//
+// 减少的下限是【开仓时的初始保证金】，即 Q × 开仓均价 / 杠杆——等价于不允许
+// 有效杠杆超过设定杠杆。越过下限时 OKX 返回 59301，本方法与之一致。
+//
+// 下限按开仓均价而非标记价计算，这一点由实测确定：减到 624.900524 时恰好等于
+// 按开仓均价算出的初始保证金，再减即被拒；若按标记价算下限应为 624.96296，
+// 比当时的保证金还高，那样当前状态本身就已违规，与实际不符。
+func (s *Simulator) AdjustMargin(instID string, posSide types.PosSide,
+	op types.MarginOp, amt decimal.Decimal) error {
+
+	if !op.Valid() {
+		return okxerr.New(okxerr.CodeParamError, "type: 非法的调整方向 %q", op)
+	}
+	if !amt.IsPositive() {
+		return okxerr.New(okxerr.CodeParamError, "amt: 调整金额须为正数，实为 %s", amt)
+	}
+	side, err := s.normalizePosSide(posSide)
+	if err != nil {
+		return err
+	}
+	key := positionKey{instID, side}
+	pos, ok := s.pos[key]
+	if !ok {
+		return okxerr.New(okxerr.CodeParamError, "%s 没有 %s 方向的持仓", instID, side)
+	}
+	if pos.MgnMode != types.MgnIsolated {
+		return okxerr.New(okxerr.CodeParamError, "只有逐仓仓位才能调整保证金")
+	}
+	inst, err := s.cfg.RefData.Instrument(instID)
+	if err != nil {
+		return err
+	}
+
+	if op == types.MarginAdd {
+		if s.cash[inst.SettleCcy].LessThan(amt) {
+			return okxerr.New(okxerr.CodeInsufficientBal,
+				"%s 可用余额 %s 不足以追加保证金 %s", inst.SettleCcy, s.cash[inst.SettleCcy], amt)
+		}
+		s.cash[inst.SettleCcy] = s.cash[inst.SettleCcy].Sub(amt)
+		pos.Margin = pos.Margin.Add(amt)
+		s.pos[key] = pos
+		return nil
+	}
+
+	floor := initialMargin(inst, pos.AbsPos(), pos.AvgPx, pos.Lever)
+	if pos.Margin.Sub(amt).LessThan(floor) {
+		return okxerr.New(okxerr.CodeMarginAdjustExceeds,
+			"%s 减少保证金 %s 后将低于开仓初始保证金 %s（当前 %s）",
+			instID, amt, floor, pos.Margin)
+	}
+	s.cash[inst.SettleCcy] = s.cash[inst.SettleCcy].Add(amt)
+	pos.Margin = pos.Margin.Sub(amt)
+	s.pos[key] = pos
+	return nil
+}

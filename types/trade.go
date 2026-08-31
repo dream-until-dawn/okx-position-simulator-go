@@ -139,3 +139,16 @@ const (
 func (e ExecType) String() string { return string(e) }
 
 func (e ExecType) Valid() bool { return e == Maker || e == Taker }
+
+// MarginOp 是逐仓保证金调整的方向，取值与 OKX
+// POST /api/v5/account/position/margin-balance 的 type 字段一致。
+type MarginOp string
+
+const (
+	MarginAdd    MarginOp = "add"
+	MarginReduce MarginOp = "reduce"
+)
+
+func (o MarginOp) String() string { return string(o) }
+
+func (o MarginOp) Valid() bool { return o == MarginAdd || o == MarginReduce }

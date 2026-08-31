@@ -29,6 +29,15 @@ const (
 	CodeNotLotSizeMultiple = "51121" // Order quantity must be a multiple of the lot size
 )
 
+// 保证金调整类错误码。
+const (
+	// CodeMarginAdjustExceeds 保证金调整超出上限。
+	//
+	// 实测触发条件：减少逐仓保证金，使其低于开仓时的初始保证金
+	// （即让有效杠杆超过设定杠杆）。
+	CodeMarginAdjustExceeds = "59301" // Margin adjustment failed because it exceeds the maximum limit
+)
+
 // Error 是携带 OKX 错误码的错误。
 type Error struct {
 	Code string // OKX 错误码，如 "51001"

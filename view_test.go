@@ -1,0 +1,289 @@
+package okxsim
+
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/dream-until-dawn/okx-position-simulator-go/okxerr"
+	"github.com/dream-until-dawn/okx-position-simulator-go/types"
+	"github.com/shopspring/decimal"
+)
+
+// ---- 逐仓保证金增减 ----
+
+func TestAdjustMarginAdd(t *testing.T) {
+	s := newSim(t, types.NetMode)
+	mustFill(t, s, netFill(types.Buy, "4", "78112.5655"))
+
+	cashBefore := s.CashBal("USDT")
+	pos, _ := s.PositionOf("BTC-USDT-SWAP", types.PosNet)
+	marginBefore := pos.Margin
+
+	if err := s.AdjustMargin("BTC-USDT-SWAP", types.PosNet, types.MarginAdd, dec("200")); err != nil {
+		t.Fatalf("追加保证金失败: %v", err)
+	}
+
+	// 一比一划转，经实测确认
+	eq(t, s.CashBal("USDT"), cashBefore.Sub(dec("200")).String(), "追加后现金")
+	pos, _ = s.PositionOf("BTC-USDT-SWAP", types.PosNet)
+	eq(t, pos.Margin, marginBefore.Add(dec("200")).String(), "追加后保证金")
+	eq(t, pos.Lever, "5", "追加保证金不改变杠杆设置")
+}
+
+// TestAdjustMarginMakesPositionSafer 追加保证金后强平价应当远离、保证金率应当上升。
+func TestAdjustMarginMakesPositionSafer(t *testing.T) {
+	s := newSim(t, types.NetMode)
+	mustFill(t, s, netFill(types.Buy, "4", "78112.5655"))
+	if err := s.SetMark("BTC-USDT-SWAP", dec("78116.13")); err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := s.MetricsOf("BTC-USDT-SWAP", types.PosNet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AdjustMargin("BTC-USDT-SWAP", types.PosNet, types.MarginAdd, dec("200")); err != nil {
+		t.Fatal(err)
+	}
+	after, err := s.MetricsOf("BTC-USDT-SWAP", types.PosNet)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !after.LiqPx.LessThan(before.LiqPx) {
+		t.Errorf("多头追加保证金后强平价应当下移，实际 %s -> %s", before.LiqPx, after.LiqPx)
+	}
+	if !after.MgnRatio.GreaterThan(before.MgnRatio) {
+		t.Errorf("追加保证金后保证金率应当上升，实际 %s -> %s", before.MgnRatio, after.MgnRatio)
+	}
+	t.Logf("强平价 %s -> %s，保证金率 %s -> %s",
+		before.LiqPx.Round(2), after.LiqPx.Round(2),
+		before.MgnRatio.Round(4), after.MgnRatio.Round(4))
+}
+
+// TestAdjustMarginReduceFloor 减少保证金的下限是开仓时的初始保证金。
+//
+// 越过下限时 OKX 返回 59301，本实现与之一致。实测序列：4 张仓位追加 200 后
+// 保证金 824.9，减 100 剩 724.9 可以，再减 200 会低于开仓初始保证金 624.900524
+// 而被拒。
+func TestAdjustMarginReduceFloor(t *testing.T) {
+	s := newSim(t, types.NetMode)
+	mustFill(t, s, netFill(types.Buy, "4", "78112.5655"))
+
+	pos, _ := s.PositionOf("BTC-USDT-SWAP", types.PosNet)
+	floor := pos.Margin // 开仓时的初始保证金
+	eq(t, floor, "624.900524", "开仓初始保证金")
+
+	if err := s.AdjustMargin("BTC-USDT-SWAP", types.PosNet, types.MarginAdd, dec("200")); err != nil {
+		t.Fatal(err)
+	}
+	// 减到恰好等于下限是允许的
+	if err := s.AdjustMargin("BTC-USDT-SWAP", types.PosNet, types.MarginReduce, dec("200")); err != nil {
+		t.Fatalf("减到下限被拒: %v", err)
+	}
+	pos, _ = s.PositionOf("BTC-USDT-SWAP", types.PosNet)
+	eq(t, pos.Margin, floor.String(), "减到下限后的保证金")
+
+	// 再减一分钱就该被拒
+	err := s.AdjustMargin("BTC-USDT-SWAP", types.PosNet, types.MarginReduce, dec("0.01"))
+	if !okxerr.HasCode(err, okxerr.CodeMarginAdjustExceeds) {
+		t.Errorf("越过下限的错误 = %v，期望 59301", err)
+	}
+	// 被拒后状态不应改变
+	pos, _ = s.PositionOf("BTC-USDT-SWAP", types.PosNet)
+	eq(t, pos.Margin, floor.String(), "被拒后保证金不应变动")
+}
+
+func TestAdjustMarginErrors(t *testing.T) {
+	s := newSim(t, types.NetMode)
+
+	// 无持仓
+	if err := s.AdjustMargin("BTC-USDT-SWAP", types.PosNet, types.MarginAdd, dec("100")); err == nil {
+		t.Error("对不存在的仓位调整保证金应当报错")
+	}
+
+	mustFill(t, s, netFill(types.Buy, "1", "78000"))
+
+	if err := s.AdjustMargin("BTC-USDT-SWAP", types.PosNet, "bogus", dec("100")); !okxerr.HasCode(err, okxerr.CodeParamError) {
+		t.Errorf("非法方向的错误 = %v，期望 51000", err)
+	}
+	if err := s.AdjustMargin("BTC-USDT-SWAP", types.PosNet, types.MarginAdd, dec("-1")); !okxerr.HasCode(err, okxerr.CodeParamError) {
+		t.Errorf("负数金额的错误 = %v，期望 51000", err)
+	}
+	if err := s.AdjustMargin("BTC-USDT-SWAP", types.PosNet, types.MarginAdd, dec("999999")); !okxerr.HasCode(err, okxerr.CodeInsufficientBal) {
+		t.Errorf("余额不足的错误 = %v，期望 51008", err)
+	}
+}
+
+// ---- 与 OKX 响应字段级同构 ----
+
+// TestPositionViewMatchesOKXShape 视图的字段集必须与 OKX 的仓位响应一致。
+//
+// 字段名取自真实响应，逐一核对——少一个字段，使用者拿它替换真实 API 时就会
+// 在那个字段上拿到零值而非空串，静默地把「无此值」变成「值为零」。
+func TestPositionViewMatchesOKXShape(t *testing.T) {
+	s := newSim(t, types.NetMode)
+	mustFill(t, s, netFill(types.Buy, "4", "78000"))
+	if err := s.SetMark("BTC-USDT-SWAP", dec("77500")); err != nil {
+		t.Fatal(err)
+	}
+
+	views, err := s.PositionViews()
+	if err != nil {
+		t.Fatalf("生成仓位视图失败: %v", err)
+	}
+	if len(views) != 1 {
+		t.Fatalf("视图数 = %d，期望 1", len(views))
+	}
+
+	b, err := json.Marshal(views[0])
+	if err != nil {
+		t.Fatalf("序列化失败: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("反序列化失败: %v", err)
+	}
+
+	// 取自 OKX 真实响应的字段名
+	want := []string{
+		"instType", "instId", "posId", "posSide", "mgnMode", "pos", "availPos",
+		"posCcy", "ccy", "avgPx", "bePx", "markPx", "liqPx", "idxPx", "last",
+		"lever", "margin", "mgnRatio", "imr", "mmr", "upl", "uplRatio",
+		"realizedPnl", "pnl", "fee", "fundingFee", "liqPenalty", "notionalUsd",
+		"adl", "usdPx", "cTime", "uTime", "tradeId",
+	}
+	for _, f := range want {
+		if _, ok := got[f]; !ok {
+			t.Errorf("视图缺少 OKX 字段 %q", f)
+		}
+	}
+
+	// 所有值必须是字符串——OKX 的 JSON 里数值都是字符串
+	for k, v := range got {
+		if _, ok := v.(string); !ok {
+			t.Errorf("字段 %q 的值类型为 %T，OKX 的线格式里数值都是字符串", k, v)
+		}
+	}
+}
+
+// TestPositionViewEmptyMeansNoValue 无值的字段必须是空串而非 "0"。
+//
+// OKX 用空串区分「无此值」与「值为零」。逐仓的 imr 恒为空串，把它写成 "0"
+// 会让下游误以为初始保证金真的是零。
+func TestPositionViewEmptyMeansNoValue(t *testing.T) {
+	s := newSim(t, types.NetMode)
+	mustFill(t, s, netFill(types.Buy, "4", "78000"))
+
+	views, err := s.PositionViews()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := views[0]
+
+	if v.Imr != "" {
+		t.Errorf("逐仓的 imr = %q，应为空串", v.Imr)
+	}
+	if v.PosCcy != "" {
+		t.Errorf("正向合约的 posCcy = %q，应为空串", v.PosCcy)
+	}
+	// 模拟器拿不到的字段一律留空
+	for name, val := range map[string]string{
+		"posId": v.PosID, "idxPx": v.IdxPx, "last": v.Last, "bePx": v.BePx,
+		"adl": v.Adl, "usdPx": v.UsdPx, "tradeId": v.TradeID,
+	} {
+		if val != "" {
+			t.Errorf("模拟器无从得知的字段 %s = %q，应为空串", name, val)
+		}
+	}
+
+	// 能算的字段必须有值
+	if v.Margin == "" || v.AvgPx == "" || v.Pos == "" || v.Lever == "" {
+		t.Errorf("可计算的字段不应为空: %+v", v)
+	}
+}
+
+func TestBalanceViewShape(t *testing.T) {
+	s := newSim(t, types.NetMode)
+	mustFill(t, s, netFill(types.Buy, "4", "78000"))
+
+	views, err := s.BalanceViews()
+	if err != nil {
+		t.Fatalf("生成余额视图失败: %v", err)
+	}
+	if len(views) != 1 || views[0].Ccy != "USDT" {
+		t.Fatalf("余额视图 = %+v", views)
+	}
+
+	b, _ := json.Marshal(views[0])
+	var got map[string]any
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"ccy", "eq", "cashBal", "availBal", "availEq",
+		"frozenBal", "ordFrozen", "isoEq", "isoUpl", "upl", "disEq"} {
+		if _, ok := got[f]; !ok {
+			t.Errorf("余额视图缺少 OKX 字段 %q", f)
+		}
+	}
+}
+
+// TestMarshalPositionsEnvelope 输出应当是 OKX 的响应信封形态，可直接做文本 diff。
+func TestMarshalPositionsEnvelope(t *testing.T) {
+	s := newSim(t, types.NetMode)
+	mustFill(t, s, netFill(types.Buy, "4", "78000"))
+
+	b, err := s.MarshalPositions()
+	if err != nil {
+		t.Fatalf("序列化失败: %v", err)
+	}
+	var env struct {
+		Code string           `json:"code"`
+		Msg  string           `json:"msg"`
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(b, &env); err != nil {
+		t.Fatalf("反序列化失败: %v", err)
+	}
+	if env.Code != "0" {
+		t.Errorf("code = %q，期望 0", env.Code)
+	}
+	if len(env.Data) != 1 {
+		t.Errorf("data 长度 = %d，期望 1", len(env.Data))
+	}
+	if env.Data[0]["instId"] != "BTC-USDT-SWAP" {
+		t.Errorf("instId = %v", env.Data[0]["instId"])
+	}
+	t.Logf("%s", b)
+}
+
+func TestInverseViewHasPosCcy(t *testing.T) {
+	s, err := New(Config{
+		PosMode: types.NetMode, RefData: mustEmbedded(t),
+		DefaultLever: decimal.NewFromInt(5),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Deposit("BTC", dec("1")); err != nil {
+		t.Fatal(err)
+	}
+	f := Fill{
+		InstID: "BTC-USD-SWAP", TdMode: types.TdIsolated, Side: types.Buy,
+		PosSide: types.PosNet, Sz: dec("1"), Px: dec("78000"),
+		ExecType: types.Taker, Ts: 1,
+	}
+	if _, err := s.Fill(f); err != nil {
+		t.Fatalf("反向合约成交失败: %v", err)
+	}
+	views, err := s.PositionViews()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if views[0].PosCcy != "USD" {
+		t.Errorf("反向合约的 posCcy = %q，期望标的币 USD", views[0].PosCcy)
+	}
+	if views[0].Ccy != "BTC" {
+		t.Errorf("反向合约的保证金币种 = %q，期望 BTC", views[0].Ccy)
+	}
+}
