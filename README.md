@@ -89,11 +89,22 @@ step, _ := sim.Advance(okxsim.Bar{
 for _, f := range step.Fundings { /* 本步结算的资金费 */ }
 ```
 
-历史费率可从 `refdata/live` 免鉴权拉取，因此**历史区间的资金费能算准**：
+> ⚠️ **数据窗口限制：OKX 的历史资金费率只保留约 3 个月。**
+>
+> 实测 `funding-rate-history` 翻到底：BTC-USDT-SWAP / ETH-USDT-SWAP /
+> DOGE-USDT-SWAP / BTC-USD-SWAP **四者全部截止在同一天**，距今 97 天，
+> 各约 294 条——这是平台级的硬窗口，不是个别合约的问题。
+>
+> **超出该窗口的回测取不到真实费率。** 结算机制本身已按真实账单验证无误，
+> 但它只在你能提供费率时才有意义。长周期回测请自行决定：接第三方数据源、
+> 用常数近似（观测到的费率多在 `0.0001`，即 OKX 的基础利率），或干脆
+> 不计资金费——后者会系统性高估多头持仓的收益，请知悉后再选。
+
+窗口内的历史费率可从 `refdata/live` 免鉴权拉取：
 
 ```go
 rs, _ := fetcher.FundingRateHistory(ctx, "BTC-USDT-SWAP", 0, after, 100)
-// rs[i].FundingTime / rs[i].RealizedRate —— 用 RealizedRate，那是实际结算所用的
+// 用 RealizedRate，那是实际结算所用的费率
 ```
 
 结算周期随合约而异（实测 49 个永续：16 个 4 小时、33 个 8 小时），由数据决定
