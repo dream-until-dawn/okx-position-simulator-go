@@ -363,7 +363,9 @@ func (s *Simulator) Advance(b Bar) (StepResult, error) {
 			"markPx: %s 在 ts=%d 没有标记价。"+
 				"退回用最新成交价顶替会让插针扫掉本不该爆的仓位，本库宁可报错也不悄悄降级。"+
 				"确实拿不到标记价数据时，把 Config.AllowMarkPxFallback 设为真表示"+
-				"你接受这份偏差", b.InstID, b.Ts)
+				"你接受这份偏差。若回测起点早于 2020-01-01，标记价历史很可能"+
+				"根本不存在——OKX 的标记价 K 线一律不早于那一天，而成交价更长",
+			b.InstID, b.Ts)
 	}
 
 	res := StepResult{Ts: b.Ts}
