@@ -476,3 +476,111 @@ func TestMarkPxFallbackLiquidatesOnAWick(t *testing.T) {
 			qm.UPL, om.UPL, qm.MgnRatio, om.MgnRatio)
 	}
 }
+
+// TestZeroValuesAreNotSafeDefaults 钉住四处「零值不是安全默认」的语义。
+//
+// 这一类静默发生在**交界处**：本库工作完全正常、该报的都报了，是调用方没读那个
+// 字段，于是一个错误的结论被产出且毫无动静。查起来最难——本库这侧测试全绿，
+// 下游那侧结果看起来也正常。
+//
+// 对应 okx-tickflow-go 那边的 NaN 陷阱（与 NaN 比较永远是 false，一个分支从此
+// 再没进去过）。本库不用 NaN，但**零值在阈值比较里扮演了同一个角色**，
+// 而且两个方向都有：
+//
+//	LiqPx = 0     多头永远「还没跌到」，告警永不触发
+//	MgnRatio = 0  永远「低于任何阈值」，告警永远在响
+//
+// 所以「零值安不安全」没有统一答案，只能逐个字段看语义。见 docs/silent-risks.md。
+func TestZeroValuesAreNotSafeDefaults(t *testing.T) {
+	// 一、没有仓位时 MgnRatio 为零，必须靠 HasPosition 分辨
+	s := newSim(t, types.NetMode)
+	m, err := s.MetricsOf("BTC-USDT-SWAP", types.PosNet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.HasPosition {
+		t.Fatal("空仓时不该报有仓位")
+	}
+	eq(t, m.MgnRatio, "0", "空仓时保证金率为零")
+	if m.MgnRatio.LessThan(dec("1.5")) && !m.HasPosition {
+		// 这正是陷阱：一个只看比率的告警会在这里响
+		t.Logf("空仓时 MgnRatio=%s 低于任何阈值——只看比率的告警会误报，"+
+			"必须先判 HasPosition", m.MgnRatio)
+	}
+
+	// 二、强平价够不着时留零，只看数值的告警永不触发
+	cm, err := s.CrossMetricsOf("USDT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, cm.LiqPx, "0", "没有全仓仓位时强平价无定义，留零")
+	if cm.HasPosition {
+		t.Error("没有全仓仓位时 HasPosition 应为假")
+	}
+
+	// 三、强平会撤单，被撤的委托必须出现在结果里——只读 Fills 的策略会丢掉整个簿
+	s2 := newSim(t, types.NetMode)
+	mustFill(t, s2, netFill(types.Buy, "4", "78000"))
+	if _, err := s2.PlaceOrder(Order{
+		OrdID: "grid-1", InstID: "BTC-USDT-SWAP", TdMode: types.TdIsolated,
+		Side: types.Buy, PosSide: types.PosNet, OrdType: types.OrdLimit,
+		Px: dec("60000"), Sz: dec("1"), Ts: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m2, err := s2.MetricsOf("BTC-USDT-SWAP", types.PosNet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s2.SetMarkPx("BTC-USDT-SWAP", m2.LiqPx.Mul(dec("0.99"))); err != nil {
+		t.Fatal(err)
+	}
+	liqs, err := s2.CheckLiquidation("BTC-USDT-SWAP", 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(liqs) == 0 {
+		t.Fatal("应当强平")
+	}
+	var canceled int
+	for _, l := range liqs {
+		canceled += len(l.CanceledOrders)
+	}
+	if canceled == 0 {
+		t.Error("强平前撤的单必须报出来——只读 Fills 的策略会丢掉整个挂单簿而不自知")
+	}
+
+	// 四、缺指数价时，index 型委托生成一条带 Reason 的 AlgoTrigger，且没有 OrdID
+	s3 := newSim(t, types.NetMode)
+	mustFill(t, s3, netFill(types.Buy, "1", "78000"))
+	if _, err := s3.PlaceAlgoOrder(AlgoOrder{
+		AlgoID: "idx", InstID: "BTC-USDT-SWAP", TdMode: types.TdIsolated,
+		Side: types.Sell, PosSide: types.PosNet, OrdType: types.AlgoTrigger,
+		TriggerPx: dec("79000"), TriggerPxType: types.TriggerIndex,
+		Sz: dec("1"), Ts: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 不给 IdxPx
+	res, err := s3.Advance(Bar{
+		InstID: "BTC-USDT-SWAP", Last: dec("80000"), High: dec("80000"),
+		Low: dec("80000"), MarkPx: dec("80000"), Ts: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.AlgoTriggers) != 1 {
+		t.Fatalf("缺指数价时应当报出一条说明，实为 %d 条", len(res.AlgoTriggers))
+	}
+	at := res.AlgoTriggers[0]
+	if at.Reason == "" {
+		t.Error("跳过的原因必须写在 Reason 里")
+	}
+	if at.OrdID != "" {
+		t.Errorf("没触发就不该有委托 ID，实为 %q——"+
+			"遍历 AlgoTriggers 而不看 Reason 的会把没触发读成触发", at.OrdID)
+	}
+	if len(res.Fills) != 0 {
+		t.Errorf("没触发就不该有成交，实为 %d 笔", len(res.Fills))
+	}
+}
