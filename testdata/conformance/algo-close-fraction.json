@@ -1,0 +1,273 @@
+{
+  "_provenance": {
+    "用途": "算法委托的 closeFraction：接受什么值、张数何时确定",
+    "标的": "BTC-USD-SWAP 逐仓多头，conditional 止盈单",
+    "取得": "2026-09-01"
+  },
+  "_calibrated": {
+    "取值": "只接受 1。0.5 / 0.3 / 2 一律被拒，code=51000 msg='Parameter closeFraction error'",
+    "它不是比例": "名字像比例，实际是个【全平】标志位。库里原先把这条缺口描述成「未建模按仓位比例平仓」，那个前提本身就是错的——OKX 不提供按比例平仓",
+    "与 sz 互斥": "同时给 closeFraction 与 sz 会被拒",
+    "读回": "下单时 sz 为空串；持仓变动后再读，sz 是【当时的】持仓量",
+    "定量时点": "⚠️ 触发那一刻才定。实测下单时持仓 200 张、随后加到 300 张，触发后 accFillSz=300，不是 200",
+    "为什么要紧": "对网格这类持仓不断变动的策略是实质差别：按下单时定量会在加仓后留下平不掉的尾巴"
+  },
+  "rejections": [
+    {
+      "frac": "0.5",
+      "code": "51000",
+      "msg": "Parameter closeFraction error",
+      "data": {}
+    },
+    {
+      "frac": "0.3",
+      "code": "51000",
+      "msg": "Parameter closeFraction error",
+      "data": {}
+    },
+    {
+      "frac": "2",
+      "code": "51000",
+      "msg": "Parameter closeFraction error",
+      "data": {}
+    },
+    {
+      "frac": "1",
+      "code": "0",
+      "msg": "",
+      "data": {
+        "algoClOrdId": "",
+        "algoId": "3883626882545324032",
+        "clOrdId": "",
+        "sCode": "0",
+        "sMsg": "",
+        "tag": ""
+      }
+    }
+  ],
+  "acceptance": [
+    {
+      "case": "closeFraction=0.5",
+      "body": {
+        "instId": "BTC-USD-SWAP",
+        "tdMode": "isolated",
+        "side": "sell",
+        "posSide": "long",
+        "ordType": "conditional",
+        "tpTriggerPx": "80472.1",
+        "tpOrdPx": "-1",
+        "closeFraction": "0.5"
+      },
+      "resp": {}
+    },
+    {
+      "case": "closeFraction=1",
+      "body": {
+        "instId": "BTC-USD-SWAP",
+        "tdMode": "isolated",
+        "side": "sell",
+        "posSide": "long",
+        "ordType": "conditional",
+        "tpTriggerPx": "80472.1",
+        "tpOrdPx": "-1",
+        "closeFraction": "1"
+      },
+      "resp": {
+        "algoClOrdId": "",
+        "algoId": "3883624980344573952",
+        "clOrdId": "",
+        "sCode": "0",
+        "sMsg": "",
+        "tag": ""
+      },
+      "readback": {
+        "activePx": "",
+        "actualPx": "",
+        "actualSide": "",
+        "actualSz": "0",
+        "advChaseParams": [],
+        "advanceOrdType": "",
+        "aggressiveness": "",
+        "algoClOrdId": "",
+        "algoId": "3883624980344573952",
+        "amendPxOnTriggerType": "0",
+        "attachAlgoOrds": [],
+        "cTime": "1788243443697",
+        "callbackRatio": "",
+        "callbackSpread": "",
+        "ccy": "BTC",
+        "chaseType": "",
+        "chaseVal": "",
+        "clOrdId": "",
+        "closeFraction": "1",
+        "failCode": "0",
+        "instId": "BTC-USD-SWAP",
+        "instType": "SWAP",
+        "isTradeBorrowMode": "",
+        "last": "78914.2",
+        "lever": "10",
+        "linkedOrd": {
+          "ordId": ""
+        },
+        "lmtOrderNumber": "",
+        "maxChaseType": "",
+        "maxChaseVal": "",
+        "moveTriggerPx": "",
+        "ordId": "",
+        "ordIdList": [],
+        "ordPx": "",
+        "ordType": "conditional",
+        "posSide": "long",
+        "pxLimit": "",
+        "pxSpread": "",
+        "pxVar": "",
+        "quickMgnType": "",
+        "reduceOnly": "true",
+        "side": "sell",
+        "slOrdPx": "",
+        "slTriggerPx": "",
+        "slTriggerPxType": "",
+        "state": "live",
+        "subAlgoIdList": [],
+        "sz": "",
+        "szLimit": "",
+        "tag": "",
+        "tdMode": "isolated",
+        "tgtCcy": "",
+        "timeInterval": "",
+        "tpOrdPx": "-1",
+        "tpTriggerPx": "80472.1",
+        "tpTriggerPxType": "last",
+        "tradeQuoteCcy": "",
+        "triggerParams": [],
+        "triggerPx": "",
+        "triggerPxType": "",
+        "triggerTime": "",
+        "uTime": "1788243443697"
+      }
+    },
+    {
+      "case": "closeFraction=0.5 + sz",
+      "body": {
+        "instId": "BTC-USD-SWAP",
+        "tdMode": "isolated",
+        "side": "sell",
+        "posSide": "long",
+        "ordType": "conditional",
+        "tpTriggerPx": "80472.1",
+        "tpOrdPx": "-1",
+        "closeFraction": "0.5",
+        "sz": "100"
+      },
+      "resp": {}
+    },
+    {
+      "case": "只给 sz（对照）",
+      "body": {
+        "instId": "BTC-USD-SWAP",
+        "tdMode": "isolated",
+        "side": "sell",
+        "posSide": "long",
+        "ordType": "conditional",
+        "tpTriggerPx": "80472.1",
+        "tpOrdPx": "-1",
+        "sz": "100"
+      },
+      "resp": {
+        "algoClOrdId": "",
+        "algoId": "3883625232271249408",
+        "clOrdId": "",
+        "sCode": "0",
+        "sMsg": "",
+        "tag": ""
+      },
+      "readback": {
+        "activePx": "",
+        "actualPx": "",
+        "actualSide": "",
+        "actualSz": "0",
+        "advChaseParams": [],
+        "advanceOrdType": "",
+        "aggressiveness": "",
+        "algoClOrdId": "",
+        "algoId": "3883625232271249408",
+        "amendPxOnTriggerType": "0",
+        "attachAlgoOrds": [],
+        "cTime": "1788243451205",
+        "callbackRatio": "",
+        "callbackSpread": "",
+        "ccy": "BTC",
+        "chaseType": "",
+        "chaseVal": "",
+        "clOrdId": "",
+        "closeFraction": "",
+        "failCode": "0",
+        "instId": "BTC-USD-SWAP",
+        "instType": "SWAP",
+        "isTradeBorrowMode": "",
+        "last": "78914.2",
+        "lever": "10",
+        "linkedOrd": {
+          "ordId": ""
+        },
+        "lmtOrderNumber": "",
+        "maxChaseType": "",
+        "maxChaseVal": "",
+        "moveTriggerPx": "",
+        "ordId": "",
+        "ordIdList": [],
+        "ordPx": "",
+        "ordType": "conditional",
+        "posSide": "long",
+        "pxLimit": "",
+        "pxSpread": "",
+        "pxVar": "",
+        "quickMgnType": "",
+        "reduceOnly": "true",
+        "side": "sell",
+        "slOrdPx": "",
+        "slTriggerPx": "",
+        "slTriggerPxType": "",
+        "state": "live",
+        "subAlgoIdList": [],
+        "sz": "100",
+        "szLimit": "",
+        "tag": "",
+        "tdMode": "isolated",
+        "tgtCcy": "",
+        "timeInterval": "",
+        "tpOrdPx": "-1",
+        "tpTriggerPx": "80472.1",
+        "tpTriggerPxType": "last",
+        "tradeQuoteCcy": "",
+        "triggerParams": [],
+        "triggerPx": "",
+        "triggerPxType": "",
+        "triggerTime": "",
+        "uTime": "1788243451205"
+      }
+    }
+  ],
+  "triggerTiming": {
+    "posAtPlace": "200",
+    "trigger": "78884.8",
+    "algoAfterAdd": {
+      "sz": "300",
+      "closeFraction": "1",
+      "state": "effective",
+      "actualSz": "300"
+    },
+    "resultOrder": {
+      "sz": "300",
+      "accFillSz": "300",
+      "avgPx": "78847.3103999749917213",
+      "state": "filled"
+    },
+    "fired": {
+      "state": "effective",
+      "sz": "300",
+      "actualSz": "300",
+      "ordId": "3883628715510988800"
+    }
+  }
+}

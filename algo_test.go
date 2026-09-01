@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/dream-until-dawn/okx-position-simulator-go/okxerr"
 	"github.com/dream-until-dawn/okx-position-simulator-go/types"
 	"github.com/shopspring/decimal"
 )
@@ -639,5 +640,113 @@ func TestTrailingStopAgainstRealTrack(t *testing.T) {
 			}
 			prevShort = got
 		}
+	}
+}
+
+// TestCloseFractionOnlyAcceptsOne 锁定 closeFraction 的取值。
+//
+// 它的名字像个比例，实际不是：实测 0.5、0.3、2 一律被 OKX 以 51000
+// 「Parameter closeFraction error」拒绝，只有 1 通过。**本库照样只收 1**——
+// 让回测里写错的策略拿到与实盘同一个错误，比悄悄按比例平掉更有用。
+//
+// 库里原先把这条缺口描述成「未建模按仓位比例平仓」，那个前提本身就是错的：
+// OKX 根本不提供按比例平仓。
+func TestCloseFractionOnlyAcceptsOne(t *testing.T) {
+	for _, bad := range []string{"0.5", "0.3", "2", "0.99"} {
+		s := newSim(t, types.NetMode)
+		mustFill(t, s, netFill(types.Buy, "2", "78000"))
+		_, err := s.PlaceAlgoOrder(AlgoOrder{
+			AlgoID: "a", InstID: "BTC-USDT-SWAP", TdMode: types.TdIsolated,
+			Side: types.Sell, PosSide: types.PosNet, OrdType: types.AlgoConditional,
+			TpTriggerPx: dec("80000"), CloseFraction: dec(bad), Ts: 1,
+		})
+		if !okxerr.HasCode(err, okxerr.CodeParamError) {
+			t.Errorf("closeFraction=%s 应当被拒，实为 %v", bad, err)
+		}
+	}
+	// 与 sz 互斥
+	s := newSim(t, types.NetMode)
+	mustFill(t, s, netFill(types.Buy, "2", "78000"))
+	if _, err := s.PlaceAlgoOrder(AlgoOrder{
+		AlgoID: "b", InstID: "BTC-USDT-SWAP", TdMode: types.TdIsolated,
+		Side: types.Sell, PosSide: types.PosNet, OrdType: types.AlgoConditional,
+		TpTriggerPx: dec("80000"), CloseFraction: dec("1"), Sz: dec("1"), Ts: 1,
+	}); !okxerr.HasCode(err, okxerr.CodeParamError) {
+		t.Errorf("closeFraction 与 sz 同时给应当被拒，实为 %v", err)
+	}
+}
+
+// TestCloseFractionResolvesSizeAtTrigger 锁定这一条里最要紧的：张数何时确定。
+//
+// 实测：下单时持仓 200 张，随后加到 300 张，触发后成交 **300 张**（accFillSz=300），
+// 不是下单时的 200。下单时算法委托的 sz 读回是空串。
+//
+// 对网格这类持仓不断变动的策略是实质差别——按下单时定量会在加仓之后留下一截
+// 平不掉的尾巴，而那截尾巴在回测里会一直带着，直到策略以为自己已经空仓。
+func TestCloseFractionResolvesSizeAtTrigger(t *testing.T) {
+	s := newSim(t, types.NetMode)
+	if err := s.Deposit("USDT", dec("500000")); err != nil {
+		t.Fatal(err)
+	}
+	mustFill(t, s, netFill(types.Buy, "2", "78000"))
+	if _, err := s.PlaceAlgoOrder(AlgoOrder{
+		AlgoID: "tp", InstID: "BTC-USDT-SWAP", TdMode: types.TdIsolated,
+		Side: types.Sell, PosSide: types.PosNet, OrdType: types.AlgoConditional,
+		TpTriggerPx: dec("79000"), CloseFraction: dec("1"), Ts: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 下单之后加仓：真实行为是触发时按【当时】的持仓平掉
+	mustFill(t, s, netFill(types.Buy, "3", "78500"))
+	p, _ := s.PositionOf("BTC-USDT-SWAP", types.PosNet)
+	eq(t, p.Pos, "5", "加仓后的持仓")
+
+	res, err := s.Advance(Bar{
+		InstID: "BTC-USDT-SWAP", Last: dec("79200"), High: dec("79300"),
+		Low: dec("78400"), MarkPx: dec("79200"), Ts: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.AlgoTriggers) != 1 {
+		t.Fatalf("应当触发一笔，实为 %d 笔", len(res.AlgoTriggers))
+	}
+	if len(res.Fills) != 1 {
+		t.Fatalf("应当成交一笔，实为 %d 笔", len(res.Fills))
+	}
+	eq(t, res.Fills[0].Fill.Sz, "5",
+		"应当按【触发时】的持仓 5 张平掉，而不是下单时的 2 张")
+	eq(t, res.Fills[0].ClosedSz, "5", "全部平掉")
+	q, ok := s.PositionOf("BTC-USDT-SWAP", types.PosNet)
+	if ok && !q.IsEmpty() {
+		t.Errorf("closeFraction=1 应当全平，实剩 %s 张", q.Pos)
+	}
+}
+
+// TestCloseFractionSkipsWhenFlat 触发时已经没有持仓就什么都不做。
+//
+// 不报错：这与「触发后的限价单挂不出去」同样处理——算法委托的职责是触发，
+// 触发之后的世界已经变了是常态，不是异常。
+func TestCloseFractionSkipsWhenFlat(t *testing.T) {
+	s := newSim(t, types.NetMode)
+	mustFill(t, s, netFill(types.Buy, "2", "78000"))
+	if _, err := s.PlaceAlgoOrder(AlgoOrder{
+		AlgoID: "tp", InstID: "BTC-USDT-SWAP", TdMode: types.TdIsolated,
+		Side: types.Sell, PosSide: types.PosNet, OrdType: types.AlgoConditional,
+		TpTriggerPx: dec("79000"), CloseFraction: dec("1"), Ts: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mustFill(t, s, netFill(types.Sell, "2", "78500")) // 策略自己先平了
+
+	res, err := s.Advance(Bar{
+		InstID: "BTC-USDT-SWAP", Last: dec("79200"), High: dec("79300"),
+		Low: dec("78400"), MarkPx: dec("79200"), Ts: 2,
+	})
+	if err != nil {
+		t.Fatalf("已空仓时触发不该报错: %v", err)
+	}
+	if len(res.Fills) != 0 {
+		t.Errorf("已空仓，不该产生成交，实为 %d 笔", len(res.Fills))
 	}
 }
