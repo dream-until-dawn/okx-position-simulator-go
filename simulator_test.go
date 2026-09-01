@@ -512,3 +512,68 @@ func TestMetricsAt(t *testing.T) {
 		t.Error("非正数的标记价应当被拒绝")
 	}
 }
+
+// TestAdjustMarginReducibleAgainstRealBound 把可减额上界与真实账户的行为对齐。
+//
+//	可减额上界 = 仓位保证金 − 按【开仓均价】算的初始保证金 + min(0, 未实现盈亏)
+//
+// 这条曾长期存疑：早先用慢速二分测出「上界比本式略高 1e-2 量级」。**那是测量假象。**
+// 二分每次成功都改变状态、来回加减耗时数秒，期间浮亏一直在漂。
+//
+// 2026-09-01 换了测法才定案：读一次仓位、立刻算出上界，然后两次调用夹逼——先试高的
+// （期望被拒，被拒不改变状态），再试低的（期望通过），窗口压到约 0.4 秒。
+// 两个规模（200 张与 1800 张）、多轮重复，`×1.0004` 一律被拒、`×0.9996` 一律通过；
+// 小仓收紧到 `±0.005%` 仍精确夹住。
+//
+// 顺带**排除了费率项**：若公式漏了「减去名义 × 吃单费率」，那一项在小仓是上界的
+// 0.254%，而夹逼区间是 0.005%——紧了 50 倍，`×0.9996` 本该失败却通过了。
+func TestAdjustMarginReducibleAgainstRealBound(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("testdata", "conformance",
+		"isolated-margin-reducible.json"))
+	if err != nil {
+		t.Fatalf("读取夹具失败: %v", err)
+	}
+	var fx struct {
+		Trials []struct {
+			Sz     string `json:"sz"`
+			Margin string `json:"margin"`
+			OpenIM string `json:"openIM"`
+			Upl    string `json:"upl"`
+			Pred   string `json:"pred"`
+			Hi     string `json:"hi"`
+			HiOK   bool   `json:"hiOK"`
+			Lo     string `json:"lo"`
+			LoOK   bool   `json:"loOK"`
+		} `json:"bracket_0.04pct"`
+	}
+	if err := json.Unmarshal(b, &fx); err != nil {
+		t.Fatalf("解析夹具失败: %v", err)
+	}
+	if len(fx.Trials) < 4 {
+		t.Fatalf("只有 %d 组夹逼样本，夹具应当有 4 组", len(fx.Trials))
+	}
+
+	var checked int
+	for _, tr := range fx.Trials {
+		// 夹具自身的一致性：高的被拒、低的通过，两侧都要成立才算夹住
+		if tr.HiOK || !tr.LoOK {
+			t.Errorf("夹具里这组没夹住：高额 %s 通过=%v，低额 %s 通过=%v",
+				tr.Hi, tr.HiOK, tr.Lo, tr.LoOK)
+			continue
+		}
+		// 本式复算：margin − openIM + min(0, upl)
+		margin, openIM, upl := dec(tr.Margin), dec(tr.OpenIM), dec(tr.Upl)
+		loss := decimal.Min(decimal.Zero, upl)
+		near(t, margin.Sub(openIM).Add(loss), dec(tr.Pred), "1e-18",
+			"可减额 = 保证金 − 开仓初始保证金 + min(0, 浮盈)")
+		// 真实上界落在 (lo, hi] 之间，而本式的预测也必须落在同一区间
+		if p := dec(tr.Pred); p.LessThan(dec(tr.Lo)) || p.GreaterThan(dec(tr.Hi)) {
+			t.Errorf("本式预测 %s 落在夹逼区间 (%s, %s] 之外", p, tr.Lo, tr.Hi)
+		}
+		checked++
+	}
+	if checked < 4 {
+		t.Fatalf("只核了 %d 组，样本不足以支撑结论", checked)
+	}
+	t.Logf("核了 %d 组真实夹逼样本", checked)
+}
