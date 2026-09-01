@@ -23,7 +23,10 @@ import (
 // 把这条纪律换成工具：`golangci-lint` 的 `exhaustive` 检查器能在 switch 漏掉
 // 某个取值时报错。对「撤单原因」这类枚举，那比靠人记得可靠。
 //
-// 若只想区分「我撤的」与「系统撤的」，判 `r != CancelUser` 即可，不必逐个列举。
+// **别用 `r != CancelUser` 去判「要不要重新同步状态」**——这些取值里有三种
+// 不是使用者撤的、却只影响那一笔委托（只挂单会成交、立即成交类没成交、
+// 触发时资金不足）。按那个判据，一个网格会在第一次挂单被拒时就停机，
+// 而那是必然发生的事、不是异常。用 AffectsAccountState 代替。
 type CancelReason string
 
 const (
@@ -38,6 +41,42 @@ const (
 	// CancelLiquidation 强平前撤单，以释放挂单占用的保证金。
 	CancelLiquidation CancelReason = "liquidation"
 )
+
+// AffectsAccountState 报告这次撤单是否意味着**账户状态可能已经失效**。
+//
+// 假为「只影响那一笔委托」，真为「账户级事件，你手上的持仓与挂单快照可能都过期了」。
+// 典型用法：
+//
+//	for _, c := range step.Canceled {
+//		if c.Reason.AffectsAccountState() {
+//			// 重新读一遍 Positions / PendingOrders，别在旧状态上继续
+//		}
+//	}
+//
+// **实现是白名单：列「无害」而不是列「有害」。** 这个方向是刻意的——新增的取值
+// 总是落进未列举的那一侧，而我们要它落进「当作账户级」那一侧。理由是代价不对称：
+//
+//	把账户级事件当成无害的  策略继续在不存在的前提上跑，且【不报错】
+//	把无害的当成账户级的    多做一次重新同步 —— 有代价，但看得见
+//
+// 这条分类由本库提供而不是让调用方自己列，是因为**本库知道哪些原因是账户级的，
+// 调用方只能猜**；而且日后本库新增原因时，调用方不改代码也不会漏。
+//
+// 这个方向是被一个真实缺陷教出来的：本库曾建议「判 r != CancelUser 即可」，
+// 而那会让网格在第一次只挂单被拒时就停机——那是必然发生的事。见
+// docs/silent-risks.md。
+func (r CancelReason) AffectsAccountState() bool {
+	switch r {
+	case CancelUser, CancelPostOnlyWouldTake, CancelImmediateUnfilled,
+		CancelInsufficientFunds:
+		// 都只影响这一笔委托：使用者自己撤的、只挂单会当场成交被拒、
+		// 立即成交类没成交不入簿、触发时资金不足以承接这一笔。
+		return false
+	}
+	// CancelLiquidation 以及**日后新增的任何取值**都落在这里。强平会撤光该合约
+	// （全仓则是该结算币种）下的全部挂单并拿走仓位——策略手上的一切都过期了。
+	return true
+}
 
 func (r CancelReason) String() string { return string(r) }
 
