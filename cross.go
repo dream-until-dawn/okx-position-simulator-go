@@ -41,6 +41,29 @@ func (s *Simulator) crossTierSizes() (map[familyKey]decimal.Decimal, error) {
 		k := familyKey{inst.InstType, inst.InstFamily}
 		out[k] = out[k].Add(p.AbsPos())
 	}
+	// 开仓挂单按【绝对值】一并计入，与持仓同一口径——实测确证。
+	//
+	// 构造了一个跨档 straddle 才分辨出来：持仓 1900 张落在一档 [0,2000]，
+	// 挂单 1000 张，合并 2900 张跨进二档。币种级 mmr 实测 0.0183630772971576，
+	// 与「合并 2900 张查到二档、整体按标记价算」差 1.16e-7（两次读数间的价格漂移），
+	// 而「持仓一档 + 挂单各自查档」差 2.4e-3 到 4.3e-3，差了四个量级。
+	//
+	// 方向不相抵：反方向的开仓挂单同样计入（残差 1.63e-7）。平仓挂单不计入
+	// （残差 3.66e-8）——它让持仓变小，不占额度。
+	//
+	// ⚠️ 仓位自身返回的 `mmr` 字段只报它【自己那一档】的数（实测持仓在一档时
+	// 恒为 0.004 率），那是显示口径，不是风控口径。拿它去反推档位会得出相反的结论。
+	for _, o := range s.pending {
+		if o.Order.TdMode != types.TdCross || !o.Cost.OpenSz.IsPositive() {
+			continue
+		}
+		inst, err := s.cfg.RefData.Instrument(o.Order.InstID)
+		if err != nil {
+			return nil, err
+		}
+		k := familyKey{inst.InstType, inst.InstFamily}
+		out[k] = out[k].Add(o.Cost.OpenSz.Abs())
+	}
 	return out, nil
 }
 

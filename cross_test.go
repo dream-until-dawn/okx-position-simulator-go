@@ -870,3 +870,141 @@ func TestCrossMgnRatioHasStructuralFloor(t *testing.T) {
 		})
 	}
 }
+
+// TestCrossTierCountsOpeningPendingOrders 锁定「合并查档张数里挂单算不算」。
+//
+// 这一条此前列在「尚未定论」里，不是因为难，是因为**样本没构造对**：旧样本中
+// 持仓本身已在二档、挂单也按二档计，两种解释给出同一个数。分辨它需要一个
+// **跨档 straddle**——持仓落在一档之内，加上挂单才越过边界。
+//
+// 实测 BTC-USD-SWAP：持仓 1900 张（一档 [0,2000]）+ 开仓挂单 1000 张，币种级 mmr
+// 与「合并 2900 张查到二档」差 1.16e-7，而与「持仓一档 + 挂单各自查档」差 2.4e-3
+// 到 4.3e-3——差了四个量级，不是取数时点能解释的。
+//
+// ⚠️ **仓位自身的 mmr 字段会把人带偏**：它只报自己那一档的数，持仓在一档时实测
+// 恒为 0.004 率，哪怕币种级已按二档计。拿它反推会得出相反的结论。
+func TestCrossTierCountsOpeningPendingOrders(t *testing.T) {
+	fx := loadCrossFixture(t)
+	snap := crossSnapshot(t, fx)
+	s, err := New(Config{PosMode: types.LongShortMode, RefData: snap})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Deposit("USDT", dec("2000000")); err != nil {
+		t.Fatal(err)
+	}
+	const inst = "ETH-USDT-SWAP"
+	tbl, err := refdata.TierTableFor(snap, mustInst(t, snap, inst), types.MgnCross)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t1 := tbl.Tiers[0]
+	// 持仓取一档上限的八成，挂单补到越过边界
+	hold := t1.MaxSz.Mul(dec("0.8"))
+	pend := t1.MaxSz.Mul(dec("0.5")) // 合计 1.3 倍上限，必跨档
+
+	if err := s.SetLeverage(inst, types.MgnCross, types.PosShort, dec("10")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Fill(Fill{
+		InstID: inst, TdMode: types.TdCross, Side: types.Sell, PosSide: types.PosShort,
+		Sz: hold, Px: dec("2500"), ExecType: types.Taker, Ts: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetMarkPx(inst, dec("2500")); err != nil {
+		t.Fatal(err)
+	}
+	base, err := s.CrossMetricsOf("USDT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m0, err := s.MetricsOf(inst, types.PosShort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, m0.MMRRate, t1.MMR.String(), "只有持仓时应落在一档")
+
+	// 同方向的开仓挂单：计入
+	if _, err := s.PlaceOrder(Order{
+		OrdID: "open-same", InstID: inst, TdMode: types.TdCross, Side: types.Sell,
+		PosSide: types.PosShort, OrdType: types.OrdLimit, Px: dec("3000"), Sz: pend, Ts: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	withPend, err := s.CrossMetricsOf("USDT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m1, err := s.MetricsOf(inst, types.PosShort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m1.MMRRate.Equal(t1.MMR) {
+		t.Fatalf("加上开仓挂单后仍按一档 %s 计——挂单没有计入合并查档", t1.MMR)
+	}
+	if !withPend.MMR.GreaterThan(base.MMR) {
+		t.Error("合并查档跨档后，币种级 mmr 应当变大")
+	}
+	// 整体按合并后的档位算：mmr = (持仓+挂单)名义 × 合并档位的率
+	tier, err := tbl.Lookup(hold.Add(pend))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst0 := mustInst(t, snap, inst)
+	want := notional(inst0, hold.Add(pend), dec("2500")).Mul(tier.MMR)
+	near(t, withPend.MMR, want, "1e-12", "币种级 mmr 应按合并档位整体计算")
+
+	if err := s.CancelOrder("open-same"); err != nil {
+		t.Fatal(err)
+	}
+
+	// 反方向的开仓挂单：同样计入，方向不相抵
+	if err := s.SetLeverage(inst, types.MgnCross, types.PosLong, dec("10")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PlaceOrder(Order{
+		OrdID: "open-opp", InstID: inst, TdMode: types.TdCross, Side: types.Buy,
+		PosSide: types.PosLong, OrdType: types.OrdLimit, Px: dec("2000"), Sz: pend, Ts: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m2, err := s.MetricsOf(inst, types.PosShort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m2.MMRRate.Equal(t1.MMR) {
+		t.Error("反方向的开仓挂单也应计入合并查档——多空不相抵")
+	}
+	if err := s.CancelOrder("open-opp"); err != nil {
+		t.Fatal(err)
+	}
+
+	// 平仓挂单：不计入
+	if _, err := s.PlaceOrder(Order{
+		OrdID: "close", InstID: inst, TdMode: types.TdCross, Side: types.Buy,
+		PosSide: types.PosShort, OrdType: types.OrdLimit, Px: dec("2000"), Sz: pend,
+		ReduceOnly: true, Ts: 4,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m3, err := s.MetricsOf(inst, types.PosShort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, m3.MMRRate, t1.MMR.String(), "平仓挂单不占额度，应仍按一档计")
+	after, err := s.CrossMetricsOf("USDT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	near(t, after.MMR, base.MMR, "1e-12", "平仓挂单不应改变币种级 mmr")
+}
+
+func mustInst(t *testing.T, snap *refdata.Snapshot, id string) refdata.Instrument {
+	t.Helper()
+	inst, err := snap.Instrument(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return inst
+}
