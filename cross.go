@@ -158,7 +158,10 @@ type CrossMetrics struct {
 
 // IsLiquidatable 报告该币种的全仓整体是否已触及强平线。
 func (m CrossMetrics) IsLiquidatable() bool {
-	return m.HasPosition && m.MgnRatio.LessThanOrEqual(decimal.NewFromInt(1))
+	// 精确比较，不走 MgnRatio。规则是「保证金率 ≤ 1」，而分母恒为正，
+	// 于是它与「权益 ≤ 分母」等价且少一次 20 位舍入。与 isolatedIsLiquidatable
+	// 同口径，见那里的说明。
+	return m.HasPosition && m.Equity.Cmp(m.MMR.Add(m.CloseFee)) <= 0
 }
 
 // CrossMetricsOf 计算某结算币种下全仓整体的风险指标。
@@ -173,7 +176,7 @@ func (m CrossMetrics) IsLiquidatable() bool {
 // 而它的维持保证金按**标记价**（那是它此刻值多少）。实测中挂单的 imr 贡献
 // 62.625 = 5000×0.2505/20 用委托价，mmr 贡献 26.85 = 5000×0.358×0.015 用标记价。
 func (s *Simulator) CrossMetricsOf(ccy string) (CrossMetrics, error) {
-	return s.crossMetrics(ccy, true)
+	return s.crossMetrics(ccy, true, true)
 }
 
 // crossMetrics 是 CrossMetricsOf 的本体，full 为 false 时跳过强平检查用不上的量。
@@ -182,17 +185,25 @@ func (s *Simulator) CrossMetricsOf(ccy string) (CrossMetrics, error) {
 // 抄两份的话，哪天有人改了其中一份的口径，模拟器就会出现「保证金率显示没事、
 // 却被强平了」这种对不上的事，而且不会有任何报错。
 //
-// full 只允许省掉**判据读不到的输出**：逐仓那侧的初始保证金、以及全仓强平价。
-// 任何流向 MgnRatio 的计算都不得放进这个开关后面。
-func (s *Simulator) crossMetrics(ccy string, full bool) (CrossMetrics, error) {
+// 两个开关只允许省掉**判据读不到的输出**：初始保证金与全仓强平价。任何流向
+// MgnRatio 的计算都不得放进开关后面。分成两个而不是一个 full，是因为三个调用方
+// 要的东西各不相同——强平判据两样都不要，BalanceOf 要 imr 但不要强平价。
+func (s *Simulator) crossMetrics(ccy string, withIMR, withLiqPx bool) (CrossMetrics, error) {
 	m := CrossMetrics{Ccy: ccy, CashBal: s.cash[ccy]}
 
-	// 合并张数只算一次，随后传给每个仓位复用——它遍历全部仓位，放在循环里
-	// 就是仓位数的平方。
-	sizes, err := s.crossTierSizes()
-	if err != nil {
-		return CrossMetrics{}, err
-	}
+	// 没有全仓敞口时，跳过尾部那几次 decimal 加减直接返回。
+	//
+	// 这不是为了少走两个空循环——是为了躲开那几次跨指数的加减。零值的指数是 0，
+	// 而现金余额经 div 之后指数常是 -20，两者相加要先算 10^20 对齐；这笔钱花在
+	// 「确认没有全仓仓位」上，而逐仓策略每个子步都要付一次。
+	//
+	// 上游网格引擎实测：18 个月 1m、286 万个子步、零全仓仓位的回测里，
+	// crossMetrics 占了全程 10.34% CPU。
+	//
+	// 判断不另起一趟遍历——那样有敞口时要多扫一遍 s.pos，实测反而慢 5%。
+	// 改成边扫边记，并把档位表推迟到第一次真的用上时才建。
+	var sizes map[familyKey]decimal.Decimal
+	any := false
 
 	for _, p := range s.pos {
 		if p.MgnMode != types.MgnCross {
@@ -205,10 +216,17 @@ func (s *Simulator) crossMetrics(ccy string, full bool) (CrossMetrics, error) {
 		if inst.SettleCcy != ccy {
 			continue
 		}
+		if sizes == nil {
+			var err error
+			if sizes, err = s.crossTierSizes(); err != nil {
+				return CrossMetrics{}, err
+			}
+		}
 		tier, err := s.tierWith(p, inst, sizes)
 		if err != nil {
 			return CrossMetrics{}, err
 		}
+		any = true
 		rate, err := s.fees.Rate(inst)
 		if err != nil {
 			return CrossMetrics{}, err
@@ -218,7 +236,7 @@ func (s *Simulator) crossMetrics(ccy string, full bool) (CrossMetrics, error) {
 
 		m.HasPosition = true
 		m.Upl = m.Upl.Add(unrealizedPnl(inst, p.SignedPos(), p.AvgPx, markPx))
-		if full {
+		if withIMR {
 			m.IMR = m.IMR.Add(div(nom, p.Lever))
 		}
 		m.MMR = m.MMR.Add(nom.Mul(tier.MMR))
@@ -241,11 +259,12 @@ func (s *Simulator) crossMetrics(ccy string, full bool) (CrossMetrics, error) {
 		if err != nil {
 			return CrossMetrics{}, err
 		}
-		if full {
+		if withIMR {
 			m.IMR = m.IMR.Add(o.Cost.Margin)
 		}
 		// 挂单冻结的开仓手续费要从权益里扣掉，实测确证，见 CrossMetrics.Equity
 		m.OrderFrozenFee = m.OrderFrozenFee.Add(o.Cost.Fee)
+		any = true
 
 		tier, err := s.pendingTier(o, inst)
 		if err != nil {
@@ -262,12 +281,19 @@ func (s *Simulator) crossMetrics(ccy string, full bool) (CrossMetrics, error) {
 		m.CloseFee = m.CloseFee.Add(nom.Mul(rate.Taker.Abs()))
 	}
 
+	if !any {
+		// 等价性：无敞口时 Upl / OrderFrozenFee / MMR / CloseFee 全是零，
+		// Equity = CashBal.Add(0).Sub(0) 与 CashBal 同值同指数；den 为零故
+		// MgnRatio 不赋值，与此处留零一致；crossLiquidationPx 无仓位时也返回零。
+		m.Equity = m.CashBal
+		return m, nil
+	}
 	m.Equity = m.CashBal.Add(m.Upl).Sub(m.OrderFrozenFee)
 	if den := m.MMR.Add(m.CloseFee); !den.IsZero() {
 		m.MgnRatio = div(m.Equity, den)
 	}
 
-	if !full {
+	if !withLiqPx {
 		return m, nil
 	}
 
