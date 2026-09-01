@@ -366,3 +366,113 @@ func TestCashExponentNeverPoisoned(t *testing.T) {
 			"这条断言本身没问题，问题在前面就该拦住", e)
 	}
 }
+
+// TestMarkPxFallbackLiquidatesOnAWick 把「回退的代价」变成一个看得见的用例。
+//
+// 本仓一路在声称「用最新成交价做强平判据会让插针扫掉本不该爆的仓位」，却一直
+// 没有测过它。这条补上：同一根 K 线，只差给不给标记价——
+//
+//	给了标记价（标记价平稳）      不强平
+//	不给、退回用最新价（插针）    **强平**
+//
+// 这就是 v1.0 把默认翻成「必须给标记价」所防的那件事。对尾部风险就是强平的策略
+// （如做多网格），它表现为假阴性：参数组合被淘汰，而扫描结果里不留任何痕迹。
+//
+// 顺带按 okx-tickflow-go 的提醒验数据流而不只是控制流：回退之后 MetricsOf 报出的
+// 未实现盈亏与保证金率也跟着用了成交价——断言「打开开关不报错」只覆盖控制流，
+// 覆盖不到这里。
+func TestMarkPxFallbackLiquidatesOnAWick(t *testing.T) {
+	build := func(t *testing.T, allowFallback bool) *Simulator {
+		t.Helper()
+		s, err := New(Config{
+			PosMode: types.NetMode, RefData: refdata.MustEmbedded(),
+			DefaultLever: decimal.NewFromInt(5), AllowMarkPxFallback: allowFallback,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Deposit("USDT", dec("10000")); err != nil {
+			t.Fatal(err)
+		}
+		mustFill(t, s, netFill(types.Buy, "4", "78000"))
+		return s
+	}
+
+	// 先取强平价，据此造一根「最新价插针跌破、标记价没跌破」的 K 线
+	probe := build(t, false)
+	if err := probe.SetMarkPx("BTC-USDT-SWAP", dec("78000")); err != nil {
+		t.Fatal(err)
+	}
+	m, err := probe.MetricsOf("BTC-USDT-SWAP", types.PosNet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	liq := m.LiqPx
+	if !liq.IsPositive() {
+		t.Fatal("拿不到强平价，测不了")
+	}
+	wick := liq.Mul(dec("0.995")) // 最新价插到强平价之下
+	calm := liq.Mul(dec("1.02"))  // 标记价仍在安全区
+
+	// 一、给了标记价：不该强平
+	withMark := build(t, false)
+	res, err := withMark.Advance(Bar{
+		InstID: "BTC-USDT-SWAP", Last: wick, High: calm, Low: wick,
+		MarkPx: calm, Ts: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Liquidations) != 0 {
+		t.Fatalf("标记价没跌破，不该强平，实为 %d 笔", len(res.Liquidations))
+	}
+	p, _ := withMark.PositionOf("BTC-USDT-SWAP", types.PosNet)
+	eq(t, p.Pos, "4", "仓位应当完好")
+
+	// 二、不给标记价、显式允许回退：同一根 K 线把仓位扫掉了
+	fallback := build(t, true)
+	res2, err := fallback.Advance(Bar{
+		InstID: "BTC-USDT-SWAP", Last: wick, High: calm, Low: wick, Ts: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res2.Liquidations) == 0 {
+		t.Fatal("退回用最新价之后，这根插针应当把仓位扫掉——" +
+			"若这里不再成立，说明回退的代价变了，本仓一路声称的理由要重新检查")
+	}
+	if q, ok := fallback.PositionOf("BTC-USDT-SWAP", types.PosNet); ok && !q.IsEmpty() {
+		t.Errorf("被强平后仓位应当清空，实剩 %s 张", q.Pos)
+	}
+
+	// 三、数据流：回退之后报出的风险指标也是按成交价算的
+	quiet := build(t, true)
+	if _, err := quiet.Advance(Bar{
+		InstID: "BTC-USDT-SWAP", Last: dec("79000"), High: dec("79000"),
+		Low: dec("79000"), Ts: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, quiet.MarkPx("BTC-USDT-SWAP"), "79000", "回退把最新价写进了标记价")
+	qm, err := quiet.MetricsOf("BTC-USDT-SWAP", types.PosNet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 与「标记价另有其值」的同一时刻对照，未实现盈亏应当不同
+	other := build(t, false)
+	if _, err := other.Advance(Bar{
+		InstID: "BTC-USDT-SWAP", Last: dec("79000"), High: dec("79000"),
+		Low: dec("79000"), MarkPx: dec("78500"), Ts: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	om, err := other.MetricsOf("BTC-USDT-SWAP", types.PosNet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if qm.UPL.Equal(om.UPL) || qm.MgnRatio.Equal(om.MgnRatio) {
+		t.Errorf("回退与给定标记价应当给出不同的风险指标，"+
+			"实为 UPL %s vs %s、保证金率 %s vs %s——若相同，说明标记价没被真正用上",
+			qm.UPL, om.UPL, qm.MgnRatio, om.MgnRatio)
+	}
+}
