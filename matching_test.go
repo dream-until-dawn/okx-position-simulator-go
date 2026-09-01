@@ -10,7 +10,7 @@ import (
 
 func bar(last, high, low string, ts int64) Bar {
 	return Bar{
-		InstID: "BTC-USDT-SWAP", Last: dec(last),
+		InstID: "BTC-USDT-SWAP", Last: dec(last), MarkPx: dec(last),
 		High: dec(high), Low: dec(low), Ts: ts,
 	}
 }
@@ -313,14 +313,14 @@ func TestFillBalanceCheckUsesAvailable(t *testing.T) {
 func TestAdvanceValidatesBar(t *testing.T) {
 	s := newSim(t, types.NetMode)
 
-	if _, err := s.Advance(Bar{Last: dec("78000")}); err == nil {
+	if _, err := s.Advance(Bar{Last: dec("78000"), MarkPx: dec("78000")}); err == nil {
 		t.Error("缺少 instId 应当报错")
 	}
 	if _, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP"}); err == nil {
 		t.Error("缺少最新价应当报错")
 	}
 	if _, err := s.Advance(Bar{
-		InstID: "BTC-USDT-SWAP", Last: dec("78000"),
+		InstID: "BTC-USDT-SWAP", Last: dec("78000"), MarkPx: dec("78000"),
 		High: dec("77000"), Low: dec("79000"),
 	}); err == nil {
 		t.Error("最低价高于最高价应当报错")

@@ -495,7 +495,7 @@ func TestCrossLiquidation(t *testing.T) {
 
 	// 推到强平价之上一点，不应触发
 	step, err := s.Advance(Bar{
-		InstID: "ETH-USDT-SWAP", Last: cm.LiqPx.Mul(dec("1.01")), Ts: 1,
+		InstID: "ETH-USDT-SWAP", Last: cm.LiqPx.Mul(dec("1.01")), MarkPx: cm.LiqPx.Mul(dec("1.01")), Ts: 1,
 	})
 	if err != nil {
 		t.Fatalf("推进行情失败: %v", err)
@@ -506,7 +506,7 @@ func TestCrossLiquidation(t *testing.T) {
 
 	// 跌破强平价
 	step, err = s.Advance(Bar{
-		InstID: "ETH-USDT-SWAP", Last: cm.LiqPx.Mul(dec("0.99")), Ts: 2,
+		InstID: "ETH-USDT-SWAP", Last: cm.LiqPx.Mul(dec("0.99")), MarkPx: cm.LiqPx.Mul(dec("0.99")), Ts: 2,
 	})
 	if err != nil {
 		t.Fatalf("推进行情失败: %v", err)
@@ -575,7 +575,7 @@ func TestCrossLiquidationClosesWholeCurrency(t *testing.T) {
 	}
 
 	// 只推其中一个合约的行情，另一个的标记价不动
-	step, err := s.Advance(Bar{InstID: "GRASS-USDT-260911", Last: dec("0.31"), Ts: 1})
+	step, err := s.Advance(Bar{InstID: "GRASS-USDT-260911", Last: dec("0.31"), MarkPx: dec("0.31"), Ts: 1})
 	if err != nil {
 		t.Fatalf("推进行情失败: %v", err)
 	}

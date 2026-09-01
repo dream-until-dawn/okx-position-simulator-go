@@ -15,7 +15,7 @@ func algoSim(t *testing.T) *Simulator {
 	t.Helper()
 	s := newSim(t, types.LongShortMode)
 	// 先给一根行情，让参考价有着落
-	if _, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("78000"),
+	if _, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("78000"), MarkPx: dec("78000"),
 		High: dec("78000"), Low: dec("78000"), Ts: 1}); err != nil {
 		t.Fatalf("推进行情失败: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestTriggerFiresAndFillsAtTriggerPx(t *testing.T) {
 	placeTrigger(t, s, "buy-the-dip", "76000", "")
 
 	// 没触及：不动
-	step, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("77000"),
+	step, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("77000"), MarkPx: dec("77000"),
 		High: dec("77500"), Low: dec("76500"), Ts: 2})
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +96,7 @@ func TestTriggerFiresAndFillsAtTriggerPx(t *testing.T) {
 	}
 
 	// 触及：本步就该成交
-	step, err = s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("76200"),
+	step, err = s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("76200"), MarkPx: dec("76200"),
 		High: dec("77000"), Low: dec("75800"), Ts: 3})
 	if err != nil {
 		t.Fatal(err)
@@ -135,7 +135,7 @@ func TestTriggerWithLimitPxPlacesOrder(t *testing.T) {
 	s := algoSim(t)
 	placeTrigger(t, s, "a1", "76000", "75000")
 
-	step, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("76200"),
+	step, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("76200"), MarkPx: dec("76200"),
 		High: dec("77000"), Low: dec("75800"), Ts: 2})
 	if err != nil {
 		t.Fatal(err)
@@ -179,7 +179,7 @@ func TestConditionalKeepsOnlyOneLeg(t *testing.T) {
 	}
 
 	// 涨到 82000：止盈那条腿已被丢弃，不该触发
-	step, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("83000"),
+	step, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("83000"), MarkPx: dec("83000"),
 		High: dec("83000"), Low: dec("81000"), Ts: 2})
 	if err != nil {
 		t.Fatal(err)
@@ -190,7 +190,7 @@ func TestConditionalKeepsOnlyOneLeg(t *testing.T) {
 	}
 
 	// 跌到 74000：止损那条腿触发
-	step, err = s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("74500"),
+	step, err = s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("74500"), MarkPx: dec("74500"),
 		High: dec("76000"), Low: dec("73500"), Ts: 3})
 	if err != nil {
 		t.Fatal(err)
@@ -217,7 +217,7 @@ func TestOCOFirstLegVoidsTheOther(t *testing.T) {
 		t.Fatalf("挂 OCO 失败: %v", err)
 	}
 
-	step, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("83000"),
+	step, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("83000"), MarkPx: dec("83000"),
 		High: dec("83000"), Low: dec("81000"), Ts: 2})
 	if err != nil {
 		t.Fatal(err)
@@ -253,7 +253,7 @@ func TestTrailingStopRatchets(t *testing.T) {
 	eq(t, pa.TriggerPx, "74100", "挂单时的触发价 = 78000 × 0.95")
 
 	// 涨：触发价跟着往上棘轮
-	if _, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("80000"),
+	if _, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("80000"), MarkPx: dec("80000"),
 		High: dec("80000"), Low: dec("79000"), Ts: 2}); err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +261,7 @@ func TestTrailingStopRatchets(t *testing.T) {
 	eq(t, pa1.TriggerPx, "76000", "涨到 80000 后触发价 = 80000 × 0.95")
 
 	// 回落但未触及：触发价不回退
-	if _, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("77000"),
+	if _, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("77000"), MarkPx: dec("77000"),
 		High: dec("78000"), Low: dec("76500"), Ts: 3}); err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +269,7 @@ func TestTrailingStopRatchets(t *testing.T) {
 	eq(t, pa2.TriggerPx, "76000", "回落时触发价不应回退")
 
 	// 跌破：触发
-	step, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("75500"),
+	step, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("75500"), MarkPx: dec("75500"),
 		High: dec("77000"), Low: dec("75000"), Ts: 4})
 	if err != nil {
 		t.Fatal(err)
@@ -304,7 +304,7 @@ func TestTrailingStopShortSide(t *testing.T) {
 	eq(t, pa0.TriggerPx, "81900", "挂单时的触发价 = 78000 × 1.05")
 
 	// 跌：触发价跟着往下棘轮
-	if _, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("74000"),
+	if _, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("74000"), MarkPx: dec("74000"),
 		High: dec("77000"), Low: dec("74000"), Ts: 2}); err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +312,7 @@ func TestTrailingStopShortSide(t *testing.T) {
 	eq(t, pa1.TriggerPx, "77700", "跌到 74000 后触发价 = 74000 × 1.05")
 
 	// 反弹但未触及：不回升
-	if _, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("76000"),
+	if _, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("76000"), MarkPx: dec("76000"),
 		High: dec("77000"), Low: dec("75000"), Ts: 3}); err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +368,7 @@ func TestTriggerPxTypeIndexNeedsIdxPx(t *testing.T) {
 		t.Fatalf("挂算法单失败: %v", err)
 	}
 
-	step, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("75000"),
+	step, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("75000"), MarkPx: dec("75000"),
 		High: dec("77000"), Low: dec("74000"), Ts: 2})
 	if err != nil {
 		t.Fatal(err)
@@ -381,7 +381,7 @@ func TestTriggerPxTypeIndexNeedsIdxPx(t *testing.T) {
 	}
 
 	// 给了指数价就能判
-	step, err = s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("75000"),
+	step, err = s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("75000"), MarkPx: dec("75000"),
 		High: dec("77000"), Low: dec("74000"), IdxPx: dec("75500"), Ts: 3})
 	if err != nil {
 		t.Fatal(err)
@@ -405,7 +405,7 @@ func TestAlgoOrderCancel(t *testing.T) {
 		t.Error("重复撤销应当报错")
 	}
 
-	step, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("74000"),
+	step, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("74000"), MarkPx: dec("74000"),
 		High: dec("77000"), Low: dec("73000"), Ts: 2})
 	if err != nil {
 		t.Fatal(err)
@@ -424,7 +424,7 @@ func TestAlgoTriggerReportsShortfall(t *testing.T) {
 	}
 	placeTrigger(t, s, "poor", "76000", "")
 
-	step, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("75000"),
+	step, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("75000"), MarkPx: dec("75000"),
 		High: dec("77000"), Low: dec("74000"), Ts: 2})
 	if err != nil {
 		t.Fatalf("推进行情不应失败: %v", err)
@@ -461,7 +461,7 @@ func mustPos(t *testing.T, s *Simulator, sz, px string) {
 func TestAlgoTriggerDescribe(t *testing.T) {
 	s := algoSim(t)
 	placeTrigger(t, s, "ok1", "76000", "")
-	step, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("76000"),
+	step, err := s.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("76000"), MarkPx: dec("76000"),
 		High: dec("77000"), Low: dec("75800"), Ts: 2})
 	if err != nil {
 		t.Fatal(err)
@@ -482,7 +482,7 @@ func TestAlgoTriggerDescribe(t *testing.T) {
 		t.Fatal(err)
 	}
 	placeTrigger(t, s2, "poor1", "76000", "")
-	step2, err := s2.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("76000"),
+	step2, err := s2.Advance(Bar{InstID: "BTC-USDT-SWAP", Last: dec("76000"), MarkPx: dec("76000"),
 		High: dec("77000"), Low: dec("75800"), Ts: 2})
 	if err != nil {
 		t.Fatal(err)

@@ -168,7 +168,7 @@ func ExampleSimulator_Advance() {
 
 	// 第一根 K 线：建立价格基准
 	if _, err := sim.Advance(okxsim.Bar{
-		InstID: "BTC-USDT-SWAP", Last: d("78000"),
+		InstID: "BTC-USDT-SWAP", Last: d("78000"), MarkPx: d("78000"),
 		High: d("78200"), Low: d("77800"), Ts: 1,
 	}); err != nil {
 		log.Fatal(err)
@@ -187,7 +187,7 @@ func ExampleSimulator_Advance() {
 
 	// 下一根 K 线的最低价触及委托价，成交
 	step, err := sim.Advance(okxsim.Bar{
-		InstID: "BTC-USDT-SWAP", Last: d("77200"),
+		InstID: "BTC-USDT-SWAP", Last: d("77200"), MarkPx: d("77200"),
 		High: d("78100"), Low: d("76800"), Ts: 2,
 	})
 	if err != nil {
@@ -315,7 +315,7 @@ func ExampleSimulator_PlaceAlgoOrder() {
 
 	// 移动止损要有个参考价才起得了步——回测里推进一根 K 线即可
 	if _, err := sim.Advance(okxsim.Bar{
-		InstID: "BTC-USDT-SWAP", Last: d("78000"),
+		InstID: "BTC-USDT-SWAP", Last: d("78000"), MarkPx: d("78000"),
 		High: d("78000"), Low: d("78000"), Ts: 1,
 	}); err != nil {
 		log.Fatal(err)
@@ -338,7 +338,7 @@ func ExampleSimulator_PlaceAlgoOrder() {
 
 	// 涨到 84000：触发价跟着往上棘轮
 	if _, err := sim.Advance(okxsim.Bar{
-		InstID: "BTC-USDT-SWAP", Last: d("84000"),
+		InstID: "BTC-USDT-SWAP", Last: d("84000"), MarkPx: d("84000"),
 		High: d("84000"), Low: d("83000"), Ts: 2,
 	}); err != nil {
 		log.Fatal(err)
@@ -348,7 +348,7 @@ func ExampleSimulator_PlaceAlgoOrder() {
 
 	// 回落跌破：触发，当场成交
 	step, err := sim.Advance(okxsim.Bar{
-		InstID: "BTC-USDT-SWAP", Last: d("79000"),
+		InstID: "BTC-USDT-SWAP", Last: d("79000"), MarkPx: d("79000"),
 		High: d("83000"), Low: d("79000"), Ts: 3,
 	})
 	if err != nil {
