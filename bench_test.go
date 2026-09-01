@@ -216,3 +216,33 @@ func BenchmarkAdvanceCross(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkPartialCloseChain 盯住「部分平仓不会让后续越算越慢」。
+//
+// decimal 的指数一旦随每次部分平仓无界增长，系数就变成几百位的大整数，
+// 此后每一次加减乘都要在这个大整数上做——回测越跑越慢，而且慢在一条不会报错、
+// 不影响结果正确性的路径上。这条基准把它变成一个看得见的数字。
+func BenchmarkPartialCloseChain(b *testing.B) {
+	s := benchSim(b, types.NetMode)
+	if err := s.Deposit("USDT", decimal.NewFromInt(500000000)); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := s.Fill(Fill{
+			InstID: "BTC-USDT-SWAP", TdMode: types.TdIsolated, Side: types.Buy,
+			PosSide: types.PosNet, Sz: decimal.NewFromInt(3),
+			Px: decimal.NewFromInt(78000), ExecType: types.Taker, Ts: int64(i * 2),
+		}); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := s.Fill(Fill{
+			InstID: "BTC-USDT-SWAP", TdMode: types.TdIsolated, Side: types.Sell,
+			PosSide: types.PosNet, Sz: decimal.NewFromInt(1),
+			Px: decimal.NewFromInt(78100), ExecType: types.Taker, Ts: int64(i*2 + 1),
+		}); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

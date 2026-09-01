@@ -531,13 +531,14 @@ func (s *Simulator) checkCrossLiquidation(ccy string, ts int64) ([]Liquidation, 
 	}
 	s.cash[ccy] = after
 
-	// 损失与超额按各仓位的消耗占比分摊，使各笔之和恰好等于整体
+	// 损失与超额按各仓位的消耗占比分摊。同样先乘后除——先算出占比再乘，
+	// 会把比例的舍入误差乘上整笔损失放大一遍。见 computeMarginDelta 的说明。
 	loss := before.Sub(after)
 	if total := charge.Neg(); total.IsPositive() {
 		for i := range out {
-			share := div(out[i].Pnl.Add(out[i].Fee).Add(out[i].Penalty).Neg(), total)
-			out[i].Loss = loss.Mul(share)
-			out[i].Excess = excess.Mul(share)
+			consumed := out[i].Pnl.Add(out[i].Fee).Add(out[i].Penalty).Neg()
+			out[i].Loss = div(loss.Mul(consumed), total)
+			out[i].Excess = div(excess.Mul(consumed), total)
 		}
 	}
 	return out, nil

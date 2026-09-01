@@ -79,7 +79,18 @@ func computeMarginDelta(res FillResult, inst refdata.Instrument,
 			if mgnMode == types.MgnCross {
 				base = initialMargin(inst, beforeAbs, res.Before.AvgPx, lever)
 			}
-			d.Release = base.Mul(div(res.ClosedSz, beforeAbs))
+			// 先乘后除，不是先除后乘。两点原因，都不是风格问题：
+			//
+			// 一  div 固定给出 -20 的指数，而 Mul 把两边指数【相加】。写成
+			//     base.Mul(div(...)) 的话，Margin 每经历一次部分平仓就多 20 位
+			//     小数，无界增长——12 轮之后系数已是 264 位的大整数，且经
+			//     Sub/Add 永久污染现金余额。网格做的全是部分平仓，正中靶心：
+			//     实测挂单数 16/80/160 时，5 倍挂单换来 22.8 倍耗时。
+			// 二  先乘后除只舍入一次。先除后乘是先把比例舍到 20 位、再乘上
+			//     一个可能上千的 base，把舍入误差一并放大。
+			//
+			// weightedAvg 一直是这个写法，这里只是补上同样的做法。
+			d.Release = div(base.Mul(res.ClosedSz), beforeAbs)
 		}
 	}
 	if res.OpenedSz.IsPositive() && !lever.IsZero() {
