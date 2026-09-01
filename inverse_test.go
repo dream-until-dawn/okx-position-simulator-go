@@ -73,6 +73,9 @@ func loadInverseFixture(t *testing.T) (inverseFixture, *refdata.Snapshot) {
 func TestInverseAgainstRealAccount(t *testing.T) {
 	fx, snap := loadInverseFixture(t)
 
+	if len(fx.Samples) < 5 {
+		t.Fatalf("只有 %d 个样本，夹具应当有 7 个——反序列化可能出问题了", len(fx.Samples))
+	}
 	for _, sm := range fx.Samples {
 		if len(sm.Positions) == 0 {
 			continue

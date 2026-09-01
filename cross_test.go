@@ -111,6 +111,11 @@ func TestCrossAgainstRealAccount(t *testing.T) {
 	const taker = "0.0005"
 
 	for _, sc := range fx.Scenarios {
+		// 夹具驱动的断言必须先确认样本非空：JSON 字段改名会让它反序列化成 nil，
+		// 于是整个循环零次迭代、测试一路绿灯，而一条真实数据都没核对。
+		if len(sc.Samples) == 0 {
+			t.Fatalf("场景 %q 没有快照——夹具结构可能变了", sc.Name)
+		}
 		for i, sample := range sc.Samples {
 			name := sc.Name
 			if sample.Label != "" {
@@ -647,6 +652,9 @@ func maxSizeConformance(t *testing.T, name string) {
 	}
 	snap := sb.Build()
 
+	if len(fx.Samples) < 10 {
+		t.Fatalf("只有 %d 个样本，夹具应当有 14 个——反序列化可能出问题了", len(fx.Samples))
+	}
 	for _, sm := range fx.Samples {
 		t.Run(sm.TdMode+"/"+sm.Px, func(t *testing.T) {
 			s, err := New(Config{PosMode: types.LongShortMode, RefData: snap})
