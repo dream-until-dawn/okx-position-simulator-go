@@ -76,6 +76,9 @@ func TestMaxSizeAtLever(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(fx.ByLever) < 3 {
+		t.Fatalf("只有 %d 个杠杆样本，夹具应当有 3 个", len(fx.ByLever))
+	}
 	for _, c := range fx.ByLever {
 		eq(t, tbl.MaxSizeAt(dec(c.Lever)), c.MaxPos, c.Lever+" 倍杠杆下的最大持仓量")
 	}
@@ -346,8 +349,18 @@ func TestLeverageChangeRetunesMargin(t *testing.T) {
 		t.Fatalf("夹具里只有 %d 次改杠杆，锁不住", len(fx.Trials))
 	}
 
+	// 两个分支都必须真的走到。夹具里若碰巧全是「权益已够」的样本，
+	// 「不足则补足」那一支就一次也不会执行——测试照样全绿，而补足逻辑一行没验。
+	// 这类空跑不会有任何提示，只能显式数。
+	var sawEnough, sawTopUp int
+
 	// 夹具里的每一次改杠杆都在本库里重演一遍
 	for _, tr := range fx.Trials {
+		if tr.Enough {
+			sawEnough++
+		} else {
+			sawTopUp++
+		}
 		name := tr.From + "x->" + tr.To + "x"
 		t.Run(name, func(t *testing.T) {
 			s := newSim(t, types.LongShortMode)
@@ -387,6 +400,11 @@ func TestLeverageChangeRetunesMargin(t *testing.T) {
 			eq(t, cashBefore.Sub(s.CashBal("USDT")),
 				after.Margin.Sub(pos.Margin).String(), "现金减少的量 = 保证金增加的量")
 		})
+	}
+
+	if sawEnough == 0 || sawTopUp == 0 {
+		t.Fatalf("两个分支必须都走到：权益已够 %d 次、需补足 %d 次——"+
+			"有一侧为零就说明那一支一行没验", sawEnough, sawTopUp)
 	}
 }
 

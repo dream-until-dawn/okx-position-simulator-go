@@ -304,3 +304,57 @@ func TestMarginExponentStaysBounded(t *testing.T) {
 		})
 	}
 }
+
+// TestCashExponentNeverPoisoned 钉住比上一条更隐蔽的那一半。
+//
+// 净持仓归零时 simulator.go:441 会删掉仓位，Margin 那条链随之重置——**于是在
+// 均值回复的策略里，Margin 的指数看着永远正常**。真正记账的是现金：它的指数是
+// 【历史最深值的水位线】，取的是曾经加进来的最小指数，**永不回落**。
+//
+// 后果比「越跑越慢」更难查：一段长的不打平行情把水位线压到很深，此后哪怕策略
+// 规规矩矩地每轮打平，整场回测都在那个被污染的精度上跑完。实测旧写法下
+// 30 次不打平把现金压到指数 -640、系数 648 位，随后 20 轮干净往返，一位都没退回来。
+//
+// 网格引擎那边最初把它描述成「现金单调累积」，实际机制是水位线不回落——差别在于
+// 损害由【最差的那一段】决定，而不是由平均形态决定。
+func TestCashExponentNeverPoisoned(t *testing.T) {
+	s := newSim(t, types.NetMode)
+	if err := s.Deposit("USDT", dec("50000000")); err != nil {
+		t.Fatal(err)
+	}
+	fill := func(side types.Side, sz, px string, ts int64) {
+		t.Helper()
+		f := netFill(side, sz, px)
+		f.Ts = ts
+		mustFill(t, s, f)
+	}
+
+	// 一段长的不打平行情，把水位线压下去
+	for i := 0; i < 30; i++ {
+		fill(types.Buy, "3", "78000", int64(i*2))
+		fill(types.Sell, "1", "78050", int64(i*2+1))
+	}
+	p, _ := s.PositionOf("BTC-USDT-SWAP", types.PosNet)
+	fill(types.Sell, p.Pos.String(), "78100", 100)
+
+	if q, ok := s.PositionOf("BTC-USDT-SWAP", types.PosNet); ok && !q.IsEmpty() {
+		t.Fatalf("这一步该把仓位打平，实为 %s 张", q.Pos)
+	}
+	// 打平后 Margin 归零，看着一切正常——所以只断言 Margin 是不够的
+	after := s.CashBal("USDT")
+	if e := after.Exponent(); e < -32 {
+		t.Errorf("现金的小数指数 = %d（系数 %d 位）——一段不打平行情把水位线压深了，"+
+			"而它永不回落，整场回测都会在这个精度上跑完",
+			e, len(after.Coefficient().String()))
+	}
+
+	// 此后干净往返也救不回来，所以水位线必须从一开始就不许被压深
+	for i := 0; i < 20; i++ {
+		fill(types.Buy, "2", "78000", int64(200+i*2))
+		fill(types.Sell, "2", "78100", int64(200+i*2+1))
+	}
+	if e := s.CashBal("USDT").Exponent(); e < -32 {
+		t.Errorf("干净往返之后现金指数仍为 %d——水位线确实不回落，"+
+			"这条断言本身没问题，问题在前面就该拦住", e)
+	}
+}
