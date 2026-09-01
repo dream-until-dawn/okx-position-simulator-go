@@ -1,6 +1,9 @@
 package okxsim
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/dream-until-dawn/okx-position-simulator-go/okxerr"
@@ -711,5 +714,149 @@ func TestZeroConfigDefaultsToIsolatedHedge(t *testing.T) {
 		Px: dec("60000"), Sz: dec("1"), Ts: 3,
 	}); err != nil {
 		t.Errorf("挂单留空 TdMode 也应当按逐仓处理: %v", err)
+	}
+}
+
+// TestRealWickSurvivesWithMarkPx 回放一次**真实**的插针。
+//
+// TestMarkPxFallbackLiquidatesOnAWick 是合成的：我造了一根 K 线去证明那个后果。
+// 这一条是真的——2026-09-01 模拟盘上一个 ETH-USDT-SWAP 全仓空头，观察期约 12 小时：
+//
+//	13:45 那根 15m   最新价高 2488     越过强平线 2487.890708882767
+//	                 标记价高 2484.58  没有越过
+//	结果             仓位未被强平，观察期内零强平账单
+//
+// **三者一致**：真实账户、真实行情、OKX 自己的判定。若把最新价顶替标记价，
+// 这一根会触发一次本不该发生的强平——那正是 v1.0 把标记价默认改成必给所防的事。
+//
+// 48 根里最新价越线 1 根、标记价越线 0 根；两条序列最大背离 6.59。
+func TestRealWickSurvivesWithMarkPx(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("testdata", "conformance", "markpx-wick-real.json"))
+	if err != nil {
+		t.Fatalf("读取夹具失败: %v", err)
+	}
+	var fx struct {
+		Instrument json.RawMessage `json:"instrument"`
+		Tiers      json.RawMessage `json:"tiers"`
+		Position   struct {
+			Pos   string `json:"pos"`
+			AvgPx string `json:"avgPx"`
+			Lever string `json:"lever"`
+		} `json:"position"`
+		BalanceUSDT struct {
+			CashBal string `json:"cashBal"`
+		} `json:"balanceUSDT"`
+		LiqPx string `json:"liqPx"`
+		Bars  []struct {
+			Ts   string                      `json:"ts"`
+			UTC8 string                      `json:"utc8"`
+			Last struct{ O, H, L, C string } `json:"last"`
+			Mark struct{ O, H, L, C string } `json:"mark"`
+		} `json:"bars"`
+		CrossingBars []struct {
+			UTC8     string `json:"utc8"`
+			LastHigh string `json:"lastHigh"`
+			MarkHigh string `json:"markHigh"`
+		} `json:"crossingBars"`
+	}
+	if err := json.Unmarshal(b, &fx); err != nil {
+		t.Fatalf("解析夹具失败: %v", err)
+	}
+	if len(fx.CrossingBars) == 0 {
+		t.Fatal("夹具里没有越线的那一根——这条测试就是为它写的")
+	}
+	if len(fx.Bars) < 40 {
+		t.Fatalf("只有 %d 根，样本太少", len(fx.Bars))
+	}
+
+	// 夹具自身的一致性：越线的那根，最新价过线而标记价没过
+	liq := dec(fx.LiqPx)
+	for _, c := range fx.CrossingBars {
+		if dec(c.LastHigh).LessThan(liq) {
+			t.Errorf("%s 被记为越线，但最新价高 %s 没到 %s", c.UTC8, c.LastHigh, liq)
+		}
+		if !dec(c.MarkHigh).LessThan(liq) {
+			t.Errorf("%s 的标记价高 %s 也过线了——那样仓位本就该被强平，"+
+				"这条测试的前提不成立", c.UTC8, c.MarkHigh)
+		}
+	}
+
+	build := func(t *testing.T, allowFallback bool) *Simulator {
+		t.Helper()
+		var inst refdata.Instrument
+		if err := json.Unmarshal(fx.Instrument, &inst); err != nil {
+			t.Fatal(err)
+		}
+		var tiers []refdata.PositionTier
+		if err := json.Unmarshal(fx.Tiers, &tiers); err != nil {
+			t.Fatal(err)
+		}
+		tbl, err := refdata.NewTierTable(refdata.TierKey{
+			InstType: types.InstSwap, MgnMode: types.MgnCross, Family: inst.InstFamily}, tiers)
+		if err != nil {
+			t.Fatal(err)
+		}
+		snap := refdata.NewSnapshotBuilder(1).AddInstruments(inst).AddTierTable(tbl).
+			SetFeeSchedule(refdata.DefaultFeeSchedule()).Build()
+		s, err := New(Config{PosMode: types.LongShortMode, RefData: snap,
+			AllowMarkPxFallback: allowFallback})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Deposit("USDT", dec(fx.BalanceUSDT.CashBal)); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SetPosition(Position{
+			InstID: inst.InstID, MgnMode: types.MgnCross, PosSide: types.PosShort,
+			Pos: dec(fx.Position.Pos), AvgPx: dec(fx.Position.AvgPx),
+			Lever: dec(fx.Position.Lever),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+
+	// 一、给标记价：整段 12 小时都不该强平，与真实账户一致
+	withMark := build(t, false)
+	for i, c := range fx.Bars {
+		res, err := withMark.Advance(Bar{
+			InstID: "ETH-USDT-SWAP", Last: dec(c.Last.C), High: dec(c.Last.H),
+			Low: dec(c.Last.L), MarkPx: dec(c.Mark.C), Ts: int64(i),
+		})
+		if err != nil {
+			t.Fatalf("%s 推进失败: %v", c.UTC8, err)
+		}
+		if len(res.Liquidations) != 0 {
+			t.Fatalf("%s 不该强平——真实账户在这一段里一次都没爆，"+
+				"最新价高 %s、标记价收 %s", c.UTC8, c.Last.H, c.Mark.C)
+		}
+	}
+	if p, ok := withMark.PositionOf("ETH-USDT-SWAP", types.PosShort); !ok || p.IsEmpty() {
+		t.Error("仓位应当完好，与真实账户一致")
+	}
+
+	// 二、退回用最新价：那一根插针会把它扫掉
+	//
+	// 这是同一段行情、同一个仓位，唯一的差别是标记价给不给。
+	fallback := build(t, true)
+	var liquidated bool
+	for i, c := range fx.Bars {
+		res, err := fallback.Advance(Bar{
+			InstID: "ETH-USDT-SWAP", Last: dec(c.Last.H), High: dec(c.Last.H),
+			Low: dec(c.Last.L), Ts: int64(i),
+		})
+		if err != nil {
+			t.Fatalf("%s 推进失败: %v", c.UTC8, err)
+		}
+		if len(res.Liquidations) > 0 {
+			liquidated = true
+			t.Logf("退回用最新价后，%s 触发了一次强平——而真实账户上它没有发生",
+				c.UTC8)
+			break
+		}
+	}
+	if !liquidated {
+		t.Error("退回用最新价应当在插针那根把仓位扫掉——" +
+			"若这里不再成立，说明回退的代价变了，那条默认值的理由要重新检查")
 	}
 }
