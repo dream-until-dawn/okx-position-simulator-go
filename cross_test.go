@@ -207,15 +207,22 @@ func TestCrossAgainstRealAccount(t *testing.T) {
 				near(t, okx("frozenBal"), isoEq.Add(imr).Add(ordFee),
 					"0.00000001", "OKX 的 frozenBal = 逐仓权益 + imr + 挂单手续费")
 
-				// 保证金率的分母含各仓位的平仓手续费。挂单也进 mmr，但它没有可平的
-				// 仓位，故不产生平仓手续费——这一项的取舍在末个快照上有 2e-4 的
-				// 相对残差，与该快照上余额与持仓不同瞬时的表现一致，见 §12。
+				// 保证金率 = (现金 + 全仓浮盈 − 挂单开仓手续费) / (mmr + 合并名义×吃单费率)。
+				//
+				// **分子要扣挂单冻结的开仓手续费**，这一项此前漏了：末个快照上留下
+				// 2e-4 的相对残差，当初判为「余额与持仓不同瞬时」。2026-09-01 专门做了
+				// 一轮跨委托价的实测才定案——eq −(availBal + imr) 恰好等于挂单按委托价
+				// 算的名义 × 吃单费率，三个差异极大的委托价下逐位吻合（残差 1e-17）。
+				//
+				// 分母里挂单那份平仓手续费一直是算上的（mmr 已含挂单，此处按同一比例
+				// 折算），实测也确证了这一点：把挂单排除会让分母小一成以上。
 				closeFee := mmr.Div(dec(sampleMMRRate(t, sample.Positions, fx))).Mul(dec(taker))
 				if den := mmr.Add(closeFee); !den.IsZero() {
-					want := cash.Add(crossUpl).Div(den)
+					want := cash.Add(crossUpl).Sub(ordFee).Div(den)
 					if diff := want.Sub(okx("mgnRatio")).Abs(); diff.
-						GreaterThan(okx("mgnRatio").Mul(dec("0.0003"))) {
-						t.Errorf("OKX 的 mgnRatio %s 与 (现金+全仓浮盈)/(mmr+平仓费)=%s 相差 %s",
+						GreaterThan(okx("mgnRatio").Mul(dec("0.000002"))) {
+						t.Errorf("OKX 的 mgnRatio %s 与 "+
+							"(现金+全仓浮盈−挂单手续费)/(mmr+平仓费)=%s 相差 %s",
 							okx("mgnRatio"), want, diff)
 					}
 				}
@@ -1007,4 +1014,98 @@ func mustInst(t *testing.T, snap *refdata.Snapshot, id string) refdata.Instrumen
 		t.Fatal(err)
 	}
 	return inst
+}
+
+// TestCrossMgnRatioWithPendingOrders 锁定含挂单时保证金率的分子与分母。
+//
+//	保证金率 = (现金 + 全仓浮盈 − Σ挂单开仓手续费) / (mmr(合并) + 合并名义 × 吃单费率)
+//
+// 两项都与直觉相反，也都实测确证过：
+//
+//	分母  开仓挂单**也计一份平仓手续费**。「尚未成交的委托没有可平的仓位，
+//	      也就没有平仓手续费」听着合理，实测是错的——排除挂单会让分母小一成以上，
+//	      算出的保证金率比真实值高 12%
+//	分子  要**扣掉挂单冻结的开仓手续费**。eq −(availBal + imr) 恰好等于挂单按
+//	      委托价算的名义 × 吃单费率，三个差异极大的委托价下逐位吻合，残差 1e-17
+//
+// 两项都让保证金率变小。漏掉它们的方向是一致的：偏乐观，全仓强平会比真实的晚触发。
+func TestCrossMgnRatioWithPendingOrders(t *testing.T) {
+	fx := loadCrossFixture(t)
+	snap := crossSnapshot(t, fx)
+	s, err := New(Config{PosMode: types.LongShortMode, RefData: snap})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Deposit("USDT", dec("1000000")); err != nil {
+		t.Fatal(err)
+	}
+	const inst = "ETH-USDT-SWAP"
+	if err := s.SetLeverage(inst, types.MgnCross, types.PosShort, dec("10")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Fill(Fill{
+		InstID: inst, TdMode: types.TdCross, Side: types.Sell, PosSide: types.PosShort,
+		Sz: dec("100"), Px: dec("2500"), ExecType: types.Taker, Ts: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetMarkPx(inst, dec("2500")); err != nil {
+		t.Fatal(err)
+	}
+	base, err := s.CrossMetricsOf("USDT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, base.OrderFee, "0", "没有挂单时不该有挂单手续费")
+	near(t, base.Equity, base.CashBal.Add(base.Upl), "1e-18",
+		"没有挂单时权益就是现金加浮盈")
+
+	// 挂单远大于持仓，把两项的影响放大到远超取整噪声
+	if _, err := s.PlaceOrder(Order{
+		OrdID: "big", InstID: inst, TdMode: types.TdCross, Side: types.Sell,
+		PosSide: types.PosShort, OrdType: types.OrdLimit, Px: dec("3000"),
+		Sz: dec("1900"), Ts: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := s.CrossMetricsOf("USDT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, ok := s.PendingOrderOf("big")
+	if !ok {
+		t.Fatal("挂单不见了")
+	}
+
+	// 分子：扣掉挂单冻结的开仓手续费
+	if !m.OrderFee.IsPositive() {
+		t.Fatal("含挂单时应当有挂单手续费")
+	}
+	near(t, m.OrderFee, o.Cost.Fee, "1e-18", "挂单手续费应当等于该委托冻结的那份")
+	near(t, m.Equity, m.CashBal.Add(m.Upl).Sub(m.OrderFee), "1e-18",
+		"权益 = 现金 + 全仓浮盈 − 挂单开仓手续费")
+
+	// 分母：挂单也计一份平仓手续费，故 CloseFee 应按【合并】名义算
+	inst0 := mustInst(t, snap, inst)
+	rate := refdata.DefaultFeeSchedule()
+	fee, err := rate.Rate(inst0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantClose := notional(inst0, dec("2000"), dec("2500")).Mul(fee.Taker.Abs())
+	near(t, m.CloseFee, wantClose, "1e-12",
+		"平仓手续费应按持仓与挂单的合并名义算")
+	if !m.CloseFee.GreaterThan(base.CloseFee.Mul(dec("10"))) {
+		t.Errorf("挂单是持仓的 19 倍，平仓手续费应当随之大出一个量级，"+
+			"实为 %s vs %s——挂单那份可能没算进去", m.CloseFee, base.CloseFee)
+	}
+
+	// 合起来：保证金率应当同时受两项影响，且都是让它变小
+	near(t, m.MgnRatio, div(m.Equity, m.MMR.Add(m.CloseFee)), "1e-18",
+		"保证金率 = 权益 / (mmr + 平仓手续费)")
+	naive := div(m.CashBal.Add(m.Upl), m.MMR.Add(base.CloseFee))
+	if !naive.GreaterThan(m.MgnRatio.Mul(dec("1.05"))) {
+		t.Errorf("漏掉两项的算法应当明显偏乐观（实测偏高 12%%），"+
+			"实为 %s vs %s——放大得不够，这条测试分辨不出对错", naive, m.MgnRatio)
+	}
 }
