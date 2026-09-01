@@ -109,9 +109,27 @@ func (r PlaceResult) Canceled() (CancelReason, bool) {
 
 // StepResult 是推进一步行情的结果。
 type StepResult struct {
-	Ts           int64
-	Fundings     []FundingResult
-	Fills        []FillResult
+	Ts       int64
+	Fundings []FundingResult
+	Fills    []FillResult
+	// Liquidations 是本步发生的强平。
+	//
+	// ⚠️ **非空意味着你的策略状态可能已经失效。** 强平会做两件事，而两件都发生在
+	// 策略不知情的情况下：
+	//
+	//	撤掉该合约（全仓则是该结算币种）下的全部挂单——挂单簿被清空
+	//	拿走仓位——阶梯减仓拿走一部分，全平拿走全部
+	//
+	// 只读 Fills 的策略会在**被清算之前的状态**上继续跑：以为自己还持有某个目标
+	// 仓位、还挂着某几格单，于是在空簿上按旧层号重挂。此后每个数都建立在一个不存在
+	// 的前提上，**而且全程不报错**。
+	//
+	// 这不是假想：一个下游的阶梯网格正是这么中招的——它的执行层读了 Canceled，
+	// 但策略层只处理了「资金不足」那几种撤单原因，漏了强平这一类。见
+	// docs/silent-risks.md 的「跨库静默」一节。
+	//
+	// 被撤销的委托 ID 在各 Liquidation 的 CanceledOrders 里，同时也会以
+	// CancelLiquidation 为原因出现在 Canceled 中。
 	Liquidations []Liquidation
 
 	// AlgoTriggers 是本步被触发的算法委托。触发后生成的普通委托若当场成交，

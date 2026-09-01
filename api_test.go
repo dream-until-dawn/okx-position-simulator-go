@@ -230,3 +230,52 @@ func TestKeyedLookupsCarryOf(t *testing.T) {
 	}
 	t.Logf("扫了 %d 个按键查询", checked)
 }
+
+// TestExportedTypeMethodsAreFrozen 冻结**非 Simulator 的导出类型**上的方法。
+//
+// 此前的两条守卫各管一半：`TestExportedAPIIsFrozen` 只冻 `Simulator` 的方法集，
+// `TestExportedFieldsAreFrozen` 只冻结构体字段。**导出类型上的方法两边都不管**
+// ——`Position.IsEmpty`、`Metrics.IsLiquidatable`、`CancelReason.AffectsAccountState`
+// 这些加了、改了、删了都不会有人拦。
+//
+// 这个洞是加 `AffectsAccountState` 时暴露的：新增一个永久承诺，全部守卫无动于衷。
+// 与「部分冻结留的是同一个『我是不是忘了加』的洞」是同一回事，只是这次漏的是方法。
+func TestExportedTypeMethodsAreFrozen(t *testing.T) {
+	want := []string{
+		// —— 撤单原因：分类与展示 ——
+		"CancelReason.AffectsAccountState", "CancelReason.Describe", "CancelReason.String",
+		// —— 风险判据 ——
+		"CrossMetrics.IsLiquidatable", "Metrics.IsLiquidatable", "Liquidation.IsBankrupt",
+		// —— 仓位 ——
+		"Position.AbsPos", "Position.IsEmpty", "Position.IsLong", "Position.IsShort",
+		"Position.SignedPos", "Position.NetRealizedPnl",
+		// —— 委托成本与缺口 ——
+		"OrderCost.Affordable", "OrderCost.Shortfall",
+		"Shortfall.String", "ShortfallError.Error", "ShortfallError.Code",
+		"ShortfallError.Unwrap",
+		// —— 事件的可读表示 ——
+		"AlgoTrigger.String", "Cancellation.String", "Liquidation.String",
+		"StepResult.Describe", "PlaceResult.Canceled",
+	}
+	sort.Strings(want)
+
+	var got []string
+	for _, v := range append(exportedStructs(),
+		CancelReason(""), LiquidationKind(""), &ShortfallError{}) {
+		rt := reflect.TypeOf(v)
+		name := rt.Name()
+		if rt.Kind() == reflect.Ptr {
+			name = rt.Elem().Name()
+		}
+		for i := 0; i < rt.NumMethod(); i++ {
+			got = append(got, name+"."+rt.Method(i).Name)
+		}
+	}
+	sort.Strings(got)
+
+	if diff := diffNames(want, got); diff != "" {
+		t.Errorf("导出类型的方法与金文件不符：\n%s\n"+
+			"若这是有意的改动，请同时更新本测试里的清单——"+
+			"v1.0 之后每个导出方法都是永久承诺", diff)
+	}
+}

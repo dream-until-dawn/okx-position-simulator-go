@@ -584,3 +584,69 @@ func TestZeroValuesAreNotSafeDefaults(t *testing.T) {
 		t.Errorf("没触发就不该有成交，实为 %d 笔", len(res.Fills))
 	}
 }
+
+// TestAffectsAccountStateBothDirections 两个方向都测。
+//
+// 只测一个方向等于没测——「把强平当成无害的」和「把只挂单被拒当成账户级的」
+// 是两个都真实、且后果不同的错：前者让策略在不存在的前提上继续跑且不报错，
+// 后者让网格在**第一根 K 线上**就停机。
+//
+// 白名单方向也一并钉住：一个未列举的取值必须落在「账户级」那一侧——这条保证
+// 本库日后新增撤单原因时，调用方不改代码也不会漏。
+func TestAffectsAccountStateBothDirections(t *testing.T) {
+	for _, r := range []CancelReason{
+		CancelUser, CancelPostOnlyWouldTake, CancelImmediateUnfilled,
+		CancelInsufficientFunds,
+	} {
+		if r.AffectsAccountState() {
+			t.Errorf("%s 只影响那一笔委托，不该判为账户级——"+
+				"这么判会让网格在第一次挂单被拒时就停机，而那是必然发生的事", r)
+		}
+	}
+	if !CancelLiquidation.AffectsAccountState() {
+		t.Error("强平会撤光挂单并拿走仓位，必须判为账户级")
+	}
+	// 未列举的取值（含日后新增的）必须落在安全那一侧
+	for _, r := range []CancelReason{"", "adl", "unknown", "某个还没有的原因"} {
+		if !r.AffectsAccountState() {
+			t.Errorf("未列举的取值 %q 必须当作账户级——"+
+				"白名单的方向就是为了让新值落进安全那一侧", r)
+		}
+	}
+
+	// 真实链路：一次强平里，被撤的单必须带上判为账户级的原因
+	s := newSim(t, types.NetMode)
+	mustFill(t, s, netFill(types.Buy, "4", "78000"))
+	if _, err := s.PlaceOrder(Order{
+		OrdID: "g1", InstID: "BTC-USDT-SWAP", TdMode: types.TdIsolated,
+		Side: types.Buy, PosSide: types.PosNet, OrdType: types.OrdLimit,
+		Px: dec("60000"), Sz: dec("1"), Ts: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := s.MetricsOf("BTC-USDT-SWAP", types.PosNet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.Advance(Bar{
+		InstID: "BTC-USDT-SWAP", Last: m.LiqPx.Mul(dec("0.98")),
+		High: dec("78000"), Low: m.LiqPx.Mul(dec("0.98")),
+		MarkPx: m.LiqPx.Mul(dec("0.98")), Ts: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Liquidations) == 0 {
+		t.Fatal("应当强平")
+	}
+	var sawAccountLevel bool
+	for _, c := range res.Canceled {
+		if c.Reason.AffectsAccountState() {
+			sawAccountLevel = true
+		}
+	}
+	if !sawAccountLevel {
+		t.Error("强平清场撤的单必须被判为账户级——" +
+			"这正是下游漏接、在空簿上按旧状态继续跑的那条路径")
+	}
+}
