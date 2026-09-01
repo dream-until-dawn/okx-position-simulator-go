@@ -66,6 +66,36 @@ func (l Liquidation) IsBankrupt() bool { return l.Excess.IsPositive() }
 // 触发判据是保证金率 ≤ 100%，即权益 ≤ 维持保证金 + 平仓手续费。
 // 判断用标记价而非最新成交价——这一点与 OKX 一致，也是强平判定的通行做法：
 // 用最新价会让插针把本不该爆的仓位扫掉。
+// CheckLiquidation 在当前状态下检查某合约是否触发强平，并在触发时了结仓位。
+//
+// 内置撮合的使用者不必调用它——Advance 每步末尾已经调了同一个函数。本方法供
+// 自行撮合、手工灌 Fill 的调用方使用：那条路径不经过 Advance，若不显式检查一次，
+// 仓位就永远不会爆仓，回测里表现为本该归零的策略一路活到最后。
+//
+// **两级都查**：合约级的逐仓仓位，以及该合约结算币种下的全部全仓仓位。全仓的
+// 强平是币种级的——同币种下的全仓仓位共担一份权益，任一合约的行情变动都可能把
+// 整个币种推过强平线，所以只查合约那一级是不够的。
+//
+// 调用时机应当与 Advance 一致：在本步全部价格变动、资金费与成交都落定【之后】。
+// 早于成交去查，看到的是一个还没发生完的状态。
+//
+// 被强平连带撤销的挂单在各 Liquidation 的 CanceledOrders 里。
+func (s *Simulator) CheckLiquidation(instID string, ts int64) ([]Liquidation, error) {
+	liqs, err := s.checkLiquidation(instID, ts)
+	if err != nil {
+		return nil, err
+	}
+	inst, err := s.cfg.RefData.Instrument(instID)
+	if err != nil {
+		return nil, err
+	}
+	cross, err := s.checkCrossLiquidation(inst.SettleCcy, ts)
+	if err != nil {
+		return nil, err
+	}
+	return append(liqs, cross...), nil
+}
+
 func (s *Simulator) checkLiquidation(instID string, ts int64) ([]Liquidation, error) {
 	var out []Liquidation
 
@@ -80,12 +110,22 @@ func (s *Simulator) checkLiquidation(instID string, ts int64) ([]Liquidation, er
 		if pos.MgnMode == types.MgnCross {
 			continue
 		}
-		m, err := s.MetricsOf(instID, side)
+		// 判据每根 K 线都要跑，所以只算它真正需要的那一个量。
+		// 走 MetricsOf 会连带算出强平价、盈亏平衡价、破产价、按最新价的浮盈——
+		// 实测这些占 Advance 全部分配的 42%，而判据一个都用不上。
+		liquidatable, err := s.isolatedIsLiquidatable(pos, instID)
 		if err != nil {
 			return nil, err
 		}
-		if !m.IsLiquidatable() {
+		if !liquidatable {
 			continue
+		}
+		// 真要强平了才算整套：强平在一轮回测里至多几次，这里省不下什么，
+		// 而给 liquidate 一个只填了几个字段的 Metrics 迟早会出事——
+		// 哪天它多用一个字段，那个字段会是静默的零。
+		m, err := s.MetricsOf(instID, side)
+		if err != nil {
+			return nil, err
 		}
 		liq, err := s.liquidate(key, m, ts)
 		if err != nil {
@@ -94,6 +134,46 @@ func (s *Simulator) checkLiquidation(instID string, ts int64) ([]Liquidation, er
 		out = append(out, liq...)
 	}
 	return out, nil
+}
+
+// isolatedIsLiquidatable 只算逐仓强平的判据：保证金率是否已跌破 1。
+//
+// 与 computeMetrics 里那段**必须逐位一致**，所以照样是「先 div 再比」，而不是
+// 改写成等价的 equity <= den。后者数学上更干净、还能省掉一次 20 位除法，但两者
+// 在 1e-20 量级上不等价：div 会把 1+1e-25 舍成恰好 1。若判据用精确比较、而
+// Metrics.MgnRatio 仍走 div，使用者就会看到「保证金率显示 1 却没强平」这种
+// 对不上的事。省那一次除法不值得。
+//
+// 省下的是另外三样：强平价、盈亏平衡价、破产价。它们每根 K 线都被算出来又扔掉。
+func (s *Simulator) isolatedIsLiquidatable(pos Position, instID string) (bool, error) {
+	inst, err := s.cfg.RefData.Instrument(instID)
+	if err != nil {
+		return false, err
+	}
+	tier, err := s.tierOf(pos, inst)
+	if err != nil {
+		return false, err
+	}
+	rate, err := s.fees.Rate(inst)
+	if err != nil {
+		return false, err
+	}
+	markPx := s.markOf(instID, pos.AvgPx)
+	// 与 computeMetrics 的 HasPosition 同口径：没有标记价就无从判断
+	if markPx.IsZero() {
+		return false, nil
+	}
+
+	nom := notional(inst, pos.AbsPos(), markPx)
+	// 维持保证金与平仓手续费同乘一个名义价值，合并成一次乘法。
+	// decimal 的加减乘都是精确的（只有除法舍入），故与分开算逐位相同。
+	den := nom.Mul(tier.MMR.Add(rate.Taker.Abs()))
+	if den.IsZero() {
+		// 与 computeMetrics 一致：分母为零时保证金率留零，而有仓位即可强平
+		return true, nil
+	}
+	equity := pos.Margin.Add(unrealizedPnl(inst, pos.SignedPos(), pos.AvgPx, markPx))
+	return div(equity, den).LessThanOrEqual(decimal.NewFromInt(1)), nil
 }
 
 // cancelOrdersOf 撤销某合约上的全部挂单，返回被撤销的委托 ID。
@@ -360,12 +440,18 @@ func signOf(d decimal.Decimal) decimal.Decimal {
 // 全仓下也会先做阶梯减仓，那样的结果比全平温和；本实现偏保守，回测里表现为
 // 高估爆仓的杀伤力，而不是低估。见 docs/roadmap.md 的覆盖缺口。
 func (s *Simulator) checkCrossLiquidation(ccy string, ts int64) ([]Liquidation, error) {
-	cm, err := s.CrossMetricsOf(ccy)
+	// 判据每根 K 线都要跑，走精简版：跳过初始保证金与全仓强平价，它们判据用不上。
+	cm, err := s.crossMetrics(ccy, false)
 	if err != nil {
 		return nil, err
 	}
 	if !cm.IsLiquidatable() {
 		return nil, nil
+	}
+	// 真要强平了才补齐——下面的 Liquidation 里要报出触发时的保证金率，
+	// 而精简版里的其余字段是零，不该流到结果里去
+	if cm, err = s.CrossMetricsOf(ccy); err != nil {
+		return nil, err
 	}
 
 	keys := make([]positionKey, 0, len(s.pos))

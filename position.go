@@ -101,6 +101,17 @@ type Fill struct {
 
 // FillResult 描述一笔成交对仓位的影响。
 type FillResult struct {
+	// Fill 是本次成交本身，含 OrdID / Side / Px / Sz / ExecType / Ts。
+	//
+	// 有它，引擎才能从 StepResult.Fills 里认出是【哪一笔挂单】在【什么价】成交的。
+	// 网格这类常驻几十笔挂单的策略，补挂环恰恰只需要这个：第 k 格的买单成交，
+	// 就在第 k+1 格补挂卖单。没有它就只能在每次 Advance 前后各拍一次 PendingOrders
+	// 快照做差集、再排除 Canceled 里的——能用，但那是热路径上一笔白花的 O(n)。
+	//
+	// 这里给的是**规范化之后**的成交：ExecType 已补上默认值，PosSide 已由空值
+	// 解析成实际方向。比调用方拿原委托对象重建更准，也可直接喂回 Fill 做重放。
+	Fill Fill
+
 	OpenedSz decimal.Decimal // 新开或加仓的张数
 	ClosedSz decimal.Decimal // 平掉的张数
 	Pnl      decimal.Decimal // 本次成交实现的盈亏
@@ -150,7 +161,7 @@ func signedDelta(f Fill, mode types.PosMode) decimal.Decimal {
 func applyFill(pos Position, f Fill, inst refdata.Instrument,
 	feeRate decimal.Decimal, mode types.PosMode) FillResult {
 
-	res := FillResult{Before: pos}
+	res := FillResult{Fill: f, Before: pos}
 
 	delta := signedDelta(f, mode)
 	cur := pos.SignedPos()
