@@ -27,7 +27,7 @@ type familyKey struct {
 //
 // 挂单不计入查档张数。OKX 确实把挂单算进了币种级的 imr 与 mmr，但当时持仓本身
 // 已在第二档，挂单是否影响档位无从分辨，故只按实测所及的部分建模。
-// 见 docs/okx-rules.md §12。
+// 见 docs/okx-rules.md §13。
 func (s *Simulator) crossTierSizes() (map[familyKey]decimal.Decimal, error) {
 	out := make(map[familyKey]decimal.Decimal)
 	for _, p := range s.pos {
@@ -380,7 +380,7 @@ func (s *Simulator) crossLiquidationPx(ccy string) (decimal.Decimal, error) {
 //
 // 用【现有持仓】合并后的档位，不把该委托自身的张数算进去。实测样本中持仓已在
 // 第二档、挂单也按第二档的 0.015 计，无法分辨 OKX 是否把挂单计入了查档张数，
-// 故只建模到证据所及之处。见 docs/okx-rules.md §12。
+// 故只建模到证据所及之处。见 docs/okx-rules.md §13。
 func (s *Simulator) pendingTier(o PendingOrder, inst refdata.Instrument) (refdata.PositionTier, error) {
 	tbl, err := refdata.TierTableFor(s.cfg.RefData, inst, types.MgnCross)
 	if err != nil {
