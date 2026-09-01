@@ -210,10 +210,13 @@ func TestFundingNeedsPrice(t *testing.T) {
 
 // ---- 与真实账单对拍 ----
 
-// TestFundingAgainstRealBills 用真实资金费账单逐条复算。
+// TestFundingAgainstRealBills 用 20 条真实账单复算正向合约的资金费。
 //
-// 账单里的 sz 与 px 是 OKX 记录的结算依据，pnl 是它实际收取的金额。
-// 期望值全部来自 OKX，而非本实现的推导。
+// **费率是独立取自 funding-rate-history 的，不是从金额反推的。** 早先这里是反推
+// 再复算——自洽，但验不出错：把 ctVal 乘错、把除法写成乘法，反推出来的率照样能把
+// 金额还原，测试一路绿灯。现在是正向代入，缺费率直接判失败而不是退回反推。
+//
+// 反向合约见 TestInverseFundingAgainstRealBills。
 func TestFundingAgainstRealBills(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join("testdata", "conformance", "funding-bills.json"))
 	if err != nil {
@@ -226,6 +229,7 @@ func TestFundingAgainstRealBills(t *testing.T) {
 			Sz     string `json:"sz"`
 			Px     string `json:"px"`
 			Pnl    string `json:"pnl"`
+			Rate   string `json:"rate"`
 		} `json:"bills"`
 	}
 	if err := json.Unmarshal(b, &fx); err != nil {
@@ -241,21 +245,19 @@ func TestFundingAgainstRealBills(t *testing.T) {
 		if bill.Sz == "" || bill.Px == "" || bill.Pnl == "" {
 			continue
 		}
-		sz, px, real := dec(bill.Sz), dec(bill.Px), dec(bill.Pnl)
-		nom := notional(inst, sz, px)
-		// 由真实金额反推费率，再用本实现的公式复算，校验二者自洽
-		if nom.IsZero() {
-			continue
+		if bill.Rate == "" {
+			t.Fatalf("账单 px=%s 缺少费率——没有费率就只能反推，而反推验不出错",
+				bill.Px)
 		}
-		rate := div(real.Neg(), nom) // 多头支付故取负
-		got := nom.Mul(rate).Neg()
-		near(t, got, real, "1e-9", "资金费 "+bill.Px)
+		// 正向代入独立取回的费率，与真实账单比
+		got := notional(inst, dec(bill.Sz), dec(bill.Px)).Mul(dec(bill.Rate)).Neg()
+		near(t, got, dec(bill.Pnl), "1e-9", "资金费 "+bill.Px)
 		checked++
 	}
-	if checked == 0 {
-		t.Fatal("夹具里没有可复算的账单")
+	if checked < 20 {
+		t.Fatalf("只复算了 %d 条账单，夹具应当有 20 条", checked)
 	}
-	t.Logf("复算了 %d 条真实资金费账单", checked)
+	t.Logf("正向复算了 %d 条真实资金费账单", checked)
 }
 
 // TestNoFundingByDefault 不传 Funding 即不计资金费，等价于零费率。
