@@ -630,3 +630,61 @@ func TestCrossLiquidationAgainstRealEvent(t *testing.T) {
 	}
 	near(t, loss, dec(fx.CashBefore), "1e-15", "损失总额封顶为该币种的现金")
 }
+
+// TestLiquidationPredicateDivergenceBand 量出 v1.0.0 与 v1.0.1 判据的分歧带。
+//
+// v1.0.1 把强平判据从 `div(equity, den) ≤ 1` 改成 `equity ≤ den`——数学上等价
+// （den 恒为正），但**除法那次 20 位舍入没了**，于是临界点上的离散结果可能翻转。
+//
+// v1.0.1 的发布说明写的是「纯优化，无行为变更」，**那是个无条件断言而它不成立**。
+// 下游若有回归基线或缓存的断点结果，需要知道哪些结果可能变——这条测试就是那个
+// 可判断的边界。
+//
+//	分歧带    0 < equity/den − 1 < 5e-21
+//	方向      旧写法判得【略微过早】：商被舍成恰好 1，于是「≤ 1」成立
+//	落进去    需要分子分母吻合到 21 位有效数字
+//
+// 也就是说改动更准（去掉了白引入的舍入），而受影响的只有强平边界附近。
+// 一倍杠杆、零强平的配置根本碰不到这条路径——用那种配置验「逐位等价」，
+// 对这条改动什么都没验到。
+func TestLiquidationPredicateDivergenceBand(t *testing.T) {
+	one := decimal.NewFromInt(1)
+	den := dec("1")
+	oldWay := func(eq decimal.Decimal) bool { return div(eq, den).LessThanOrEqual(one) }
+	newWay := func(eq decimal.Decimal) bool { return eq.Cmp(den) <= 0 }
+
+	for _, c := range []struct {
+		eq     string
+		differ bool
+		why    string
+	}{
+		{"0.999999999999999999999", false, "已跌破，两者都判强平"},
+		{"1", false, "恰好相等，两者都判强平"},
+		{"1.000000000000000000001", true, "带内：商被舍成 1，旧写法误判强平"},
+		{"1.000000000000000000004", true, "带内"},
+		{"1.000000000000000000005", false, "带边界：舍入不再落到 1"},
+		{"1.0000000000000000001", false, "带外"},
+		{"1.1", false, "远离边界"},
+	} {
+		o, n := oldWay(dec(c.eq)), newWay(dec(c.eq))
+		if (o != n) != c.differ {
+			t.Errorf("equity/den=%s：旧=%v 新=%v，期望%s分歧（%s）",
+				c.eq, o, n, map[bool]string{true: "", false: "不"}[c.differ], c.why)
+		}
+		if c.differ && !o {
+			t.Errorf("equity/den=%s：分歧时应当是旧写法判强平、新写法不判", c.eq)
+		}
+	}
+
+	// 带宽恰好是 div 的舍入粒度的一半：5e-21 = 0.5 × 10^-20
+	half := decimal.New(5, -21)
+	if !half.Equal(dec("0.000000000000000000005")) {
+		t.Fatalf("带宽算错了：%s", half)
+	}
+	if oldWay(one.Add(half)) {
+		t.Error("恰好在带边界上，旧写法不该再判强平——带宽比 5e-21 更宽了")
+	}
+	if !oldWay(one.Add(half.Div(decimal.NewFromInt(2)))) {
+		t.Error("带内一半处旧写法应当判强平——带宽比 5e-21 更窄了")
+	}
+}
