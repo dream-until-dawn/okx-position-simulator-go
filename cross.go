@@ -27,7 +27,7 @@ type familyKey struct {
 //
 // 挂单不计入查档张数。OKX 确实把挂单算进了币种级的 imr 与 mmr，但当时持仓本身
 // 已在第二档，挂单是否影响档位无从分辨，故只按实测所及的部分建模。
-// 见 docs/okx-rules.md §12。
+// 见 docs/okx-rules.md §13。
 func (s *Simulator) crossTierSizes() (map[familyKey]decimal.Decimal, error) {
 	out := make(map[familyKey]decimal.Decimal)
 	for _, p := range s.pos {
@@ -119,13 +119,29 @@ func (s *Simulator) tierWith(pos Position, inst refdata.Instrument,
 // 恒为空串——风险按结算币种分别核算，不做全账户折算。跨币种折算是 acctLv=3 的
 // 事，明确排除在 v1.0 之外。
 type CrossMetrics struct {
-	Ccy      string          // 结算币种
-	CashBal  decimal.Decimal // 现金余额
-	Upl      decimal.Decimal // 全仓仓位的未实现盈亏合计
-	Equity   decimal.Decimal // 全仓权益 = CashBal + Upl
-	IMR      decimal.Decimal // 初始保证金合计，含挂单占用
-	MMR      decimal.Decimal // 维持保证金合计，含挂单占用
-	CloseFee decimal.Decimal // 全仓仓位的平仓手续费合计，参与保证金率的分母
+	Ccy     string          // 结算币种
+	CashBal decimal.Decimal // 现金余额
+	Upl     decimal.Decimal // 全仓仓位的未实现盈亏合计
+	// Equity 是参与保证金率的权益：现金 + 全仓浮盈 − 挂单冻结的开仓手续费。
+	//
+	// ⚠️ 最后一项容易漏。实测：eq −(availBal + imr) 恰好等于挂单按【委托价】算的
+	// 名义 × 吃单费率，三个差异极大的委托价（现价的 1.05/1.50/2.00 倍）下逐位吻合，
+	// 残差 1e-17。漏掉它会让含挂单时的保证金率偏大——也就是偏乐观。
+	Equity decimal.Decimal
+
+	// OrderFee 是挂单冻结的开仓手续费合计，已从 Equity 中扣除。
+	OrderFee decimal.Decimal
+
+	IMR decimal.Decimal // 初始保证金合计，含挂单占用
+	MMR decimal.Decimal // 维持保证金合计，含挂单占用
+
+	// CloseFee 是平仓手续费合计，**开仓挂单也算一份**。
+	//
+	// 「尚未成交的委托没有可平的仓位，也就没有平仓手续费」听着合理，实测是错的：
+	// OKX 在风险计算上把开仓挂单整个当仓位看待，维持保证金与平仓手续费都收。
+	// 把挂单排除在外会让分母小一成以上——实测持仓 100 张、挂单 1900 张时，
+	// 排除挂单算出的保证金率比真实值高 12%。
+	CloseFee decimal.Decimal
 	MgnRatio decimal.Decimal // 保证金率，≤ 1 触发全仓强平
 	LiqPx    decimal.Decimal // 预估强平价；无定义时为零，判据见 crossLiquidationPx
 
@@ -205,8 +221,11 @@ func (s *Simulator) crossMetrics(ccy string, full bool) (CrossMetrics, error) {
 		m.CloseFee = m.CloseFee.Add(nom.Mul(rate.Taker.Abs()))
 	}
 
-	// 挂单同样占用初始保证金与维持保证金。它们不进 CloseFee——尚未成交的委托
-	// 没有可平的仓位，也就没有平仓手续费。
+	// 开仓挂单在风险计算上被整个当仓位看待：初始保证金、维持保证金、平仓手续费
+	// 三项都收。这一条与直觉相反——「尚未成交的委托没有可平的仓位，也就没有平仓
+	// 手续费」听着合理，实测是错的。
+	//
+	// 另外它冻结的【开仓】手续费要从权益里扣掉，见 CrossMetrics.Equity。
 	for _, o := range s.pending {
 		if o.Cost.Ccy != ccy || o.Order.TdMode != types.TdCross {
 			continue
@@ -221,16 +240,25 @@ func (s *Simulator) crossMetrics(ccy string, full bool) (CrossMetrics, error) {
 		if full {
 			m.IMR = m.IMR.Add(o.Cost.Margin)
 		}
+		// 挂单冻结的开仓手续费要从权益里扣掉，实测确证，见 CrossMetrics.Equity
+		m.OrderFee = m.OrderFee.Add(o.Cost.Fee)
 
 		tier, err := s.pendingTier(o, inst)
 		if err != nil {
 			return CrossMetrics{}, err
 		}
 		markPx := s.markOf(o.Order.InstID, o.Order.Px)
-		m.MMR = m.MMR.Add(notional(inst, o.Cost.OpenSz, markPx).Mul(tier.MMR))
+		nom := notional(inst, o.Cost.OpenSz, markPx)
+		m.MMR = m.MMR.Add(nom.Mul(tier.MMR))
+		// 开仓挂单同样计一份平仓手续费——实测如此，见 CrossMetrics.CloseFee
+		rate, err := s.fees.Rate(inst)
+		if err != nil {
+			return CrossMetrics{}, err
+		}
+		m.CloseFee = m.CloseFee.Add(nom.Mul(rate.Taker.Abs()))
 	}
 
-	m.Equity = m.CashBal.Add(m.Upl)
+	m.Equity = m.CashBal.Add(m.Upl).Sub(m.OrderFee)
 	if den := m.MMR.Add(m.CloseFee); !den.IsZero() {
 		m.MgnRatio = div(m.Equity, den)
 	}
@@ -352,7 +380,7 @@ func (s *Simulator) crossLiquidationPx(ccy string) (decimal.Decimal, error) {
 //
 // 用【现有持仓】合并后的档位，不把该委托自身的张数算进去。实测样本中持仓已在
 // 第二档、挂单也按第二档的 0.015 计，无法分辨 OKX 是否把挂单计入了查档张数，
-// 故只建模到证据所及之处。见 docs/okx-rules.md §12。
+// 故只建模到证据所及之处。见 docs/okx-rules.md §13。
 func (s *Simulator) pendingTier(o PendingOrder, inst refdata.Instrument) (refdata.PositionTier, error) {
 	tbl, err := refdata.TierTableFor(s.cfg.RefData, inst, types.MgnCross)
 	if err != nil {
