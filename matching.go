@@ -74,7 +74,8 @@ type Bar struct {
 // markPx 返回本步的标记价；没给就退回最新成交价。
 //
 // 这个退化是有代价的：强平判据本该看标记价，用最新成交价会让插针扫掉本不该爆的
-// 仓位。要让它变成一次响亮的失败而不是一批看着正常的错结果，见 Config.RequireMarkPx。
+// 仓位。所以本库默认拒绝——确实拿不到数据时才用 Config.AllowMarkPxFallback
+// 显式选择退出，见那里的说明。
 func (b Bar) markPx() decimal.Decimal {
 	if b.MarkPx.IsPositive() {
 		return b.MarkPx
@@ -357,11 +358,12 @@ func (s *Simulator) Advance(b Bar) (StepResult, error) {
 		return StepResult{}, okxerr.New(okxerr.CodeParamError,
 			"low(%s) 不应高于 high(%s)", b.Low, b.High)
 	}
-	if s.cfg.RequireMarkPx && !b.MarkPx.IsPositive() {
+	if !s.cfg.AllowMarkPxFallback && !b.MarkPx.IsPositive() {
 		return StepResult{}, okxerr.New(okxerr.CodeParamEmpty,
-			"markPx: %s 在 ts=%d 没有标记价，而 Config.RequireMarkPx 已开启。"+
-				"退回用最新成交价顶替会让插针扫掉本不该爆的仓位，"+
-				"这里宁可报错也不悄悄降级", b.InstID, b.Ts)
+			"markPx: %s 在 ts=%d 没有标记价。"+
+				"退回用最新成交价顶替会让插针扫掉本不该爆的仓位，本库宁可报错也不悄悄降级。"+
+				"确实拿不到标记价数据时，把 Config.AllowMarkPxFallback 设为真表示"+
+				"你接受这份偏差", b.InstID, b.Ts)
 	}
 
 	res := StepResult{Ts: b.Ts}

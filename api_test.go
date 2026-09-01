@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/shopspring/decimal"
 )
 
 // TestExportedAPIIsFrozen 把对外形态记成金文件。
@@ -20,7 +22,7 @@ import (
 func TestExportedAPIIsFrozen(t *testing.T) {
 	want := []string{
 		// —— 构造与配置 ——
-		"FeeSchedule", "PosMode", "Instrument",
+		"FeeSchedule", "PosMode", "InstrumentOf",
 		// —— 资金 ——
 		"CashBal", "Deposit", "Withdraw",
 		"BalanceOf", "Balances", "BalanceViews",
@@ -175,4 +177,56 @@ func diffNames(want, got []string) string {
 		}
 	}
 	return b.String()
+}
+
+// TestKeyedLookupsCarryOf 把「按键查询带 Of」这条规则变成机械守卫。
+//
+// v0.9.0 把命名落到两条可学的规则上，其一是「按键查询的复合结果一律带 Of，
+// 返回标量的不带」。但那一版只给行情读写留了守卫（TestPriceAccessorsArePaired），
+// Of 这条靠人记——于是 v0.9.1 加的 Instrument(instID) 就这么溜了过去，
+// 形状与 BalanceOf 完全一样却没带 Of，直到 v1.0 前的定型审查才发现。
+//
+// 判据取得很窄，只认**纯查询**：参数全是键（字符串或字符串定义的类型），
+// 且第一个返回值是结构体。据此排除三类：
+//
+//	decimal.Decimal      本库的标量，虽然是结构体但按标量对待（LastPx、CashBal）
+//	切片                 复数形式自带含义，不需要 Of（PendingOrders）
+//	带非键参数的计算     那是「算一个假设值」而非「查一个已存的值」，
+//	                     用 At 或直接动词（MetricsAt、MaxSize、OrderCost）
+func TestKeyedLookupsCarryOf(t *testing.T) {
+	isKeyLike := func(t reflect.Type) bool { return t.Kind() == reflect.String }
+	decType := reflect.TypeOf(decimal.Decimal{})
+
+	rt := reflect.TypeOf(&Simulator{})
+	var checked int
+	for i := 0; i < rt.NumMethod(); i++ {
+		m := rt.Method(i)
+		ft := m.Type
+		if ft.NumIn() < 2 || ft.NumOut() == 0 { // NumIn 含接收者
+			continue
+		}
+		allKeys := true
+		for k := 1; k < ft.NumIn(); k++ {
+			if !isKeyLike(ft.In(k)) {
+				allKeys = false
+				break
+			}
+		}
+		out := ft.Out(0)
+		if !allKeys || out.Kind() != reflect.Struct || out == decType {
+			continue
+		}
+		checked++
+		if !strings.HasSuffix(m.Name, "Of") {
+			t.Errorf("%s 按键查询并返回 %s，应当以 Of 结尾——"+
+				"这条规则见 v0.9.0 的命名整理，同形状的还有 "+
+				"PositionOf / BalanceOf / MetricsOf / PendingOrderOf",
+				m.Name, out.Name())
+		}
+	}
+	if checked < 5 {
+		t.Fatalf("只扫到 %d 个按键查询，判据可能失效了——"+
+			"若是有意收窄，请同时改这里的下限", checked)
+	}
+	t.Logf("扫了 %d 个按键查询", checked)
 }

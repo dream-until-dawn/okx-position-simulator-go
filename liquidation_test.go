@@ -37,7 +37,7 @@ func TestLiquidationTriggersAtLiqPx(t *testing.T) {
 	// 停在强平价上方，不该触发
 	safe := m.LiqPx.Add(dec("50"))
 	step := mustAdvance(t, s, Bar{
-		InstID: "BTC-USDT-SWAP", Last: safe, High: safe, Low: safe, Ts: 2})
+		InstID: "BTC-USDT-SWAP", Last: safe, MarkPx: safe, High: safe, Low: safe, Ts: 2})
 	if len(step.Liquidations) != 0 {
 		t.Fatalf("强平价上方不应触发，实际 %+v", step.Liquidations)
 	}
@@ -48,7 +48,7 @@ func TestLiquidationTriggersAtLiqPx(t *testing.T) {
 	// 跌破强平价，触发
 	hit := m.LiqPx.Sub(dec("1"))
 	step = mustAdvance(t, s, Bar{
-		InstID: "BTC-USDT-SWAP", Last: hit, High: hit, Low: hit, Ts: 3})
+		InstID: "BTC-USDT-SWAP", Last: hit, MarkPx: hit, High: hit, Low: hit, Ts: 3})
 	if len(step.Liquidations) != 1 {
 		t.Fatalf("跌破强平价应触发一次强平，实际 %d 次", len(step.Liquidations))
 	}
@@ -77,7 +77,7 @@ func TestLiquidationLosesEntireMargin(t *testing.T) {
 
 	hit := m.LiqPx.Sub(dec("1"))
 	step := mustAdvance(t, s, Bar{
-		InstID: "BTC-USDT-SWAP", Last: hit, High: hit, Low: hit, Ts: 3})
+		InstID: "BTC-USDT-SWAP", Last: hit, MarkPx: hit, High: hit, Low: hit, Ts: 3})
 	if len(step.Liquidations) != 1 {
 		t.Fatalf("应触发强平")
 	}
@@ -109,7 +109,7 @@ func TestLiquidationCancelsPendingOrders(t *testing.T) {
 
 	hit := m.LiqPx.Sub(dec("1"))
 	step := mustAdvance(t, s, Bar{
-		InstID: "BTC-USDT-SWAP", Last: hit, High: hit, Low: hit, Ts: 3})
+		InstID: "BTC-USDT-SWAP", Last: hit, MarkPx: hit, High: hit, Low: hit, Ts: 3})
 	if len(step.Liquidations) != 1 {
 		t.Fatalf("应触发强平，实际 %+v", step)
 	}
@@ -141,13 +141,13 @@ func TestLiquidationExcessScalesWithGap(t *testing.T) {
 	s1, m1 := liqSim(t, types.Buy, "100")
 	hit := m1.LiqPx.Sub(dec("1"))
 	normal := mustAdvance(t, s1, Bar{
-		InstID: "BTC-USDT-SWAP", Last: hit, High: hit, Low: hit, Ts: 3}).Liquidations[0]
+		InstID: "BTC-USDT-SWAP", Last: hit, MarkPx: hit, High: hit, Low: hit, Ts: 3}).Liquidations[0]
 
 	// 跳空：直接跌到破产价下方
 	s2, m2 := liqSim(t, types.Buy, "100")
 	gap := m2.BkPx.Sub(dec("200"))
 	gapped := mustAdvance(t, s2, Bar{
-		InstID: "BTC-USDT-SWAP", Last: gap, High: gap, Low: gap, Ts: 3}).Liquidations[0]
+		InstID: "BTC-USDT-SWAP", Last: gap, MarkPx: gap, High: gap, Low: gap, Ts: 3}).Liquidations[0]
 
 	t.Logf("常态：成交价 %s 超出 %s；跳空：成交价 %s 超出 %s（保证金 %s）",
 		normal.Px, normal.Excess, gapped.Px, gapped.Excess, normal.Loss)
@@ -169,7 +169,7 @@ func TestLiquidationPenaltyIsMaintenanceMargin(t *testing.T) {
 	s, m := liqSim(t, types.Buy, "100")
 	hit := m.LiqPx.Sub(dec("1"))
 	liq := mustAdvance(t, s, Bar{
-		InstID: "BTC-USDT-SWAP", Last: hit, High: hit, Low: hit, Ts: 3}).Liquidations[0]
+		InstID: "BTC-USDT-SWAP", Last: hit, MarkPx: hit, High: hit, Low: hit, Ts: 3}).Liquidations[0]
 
 	inst, err := refdata.MustEmbedded().Instrument("BTC-USDT-SWAP")
 	if err != nil {
@@ -195,7 +195,7 @@ func TestLiquidationShortSide(t *testing.T) {
 	// 价格上涨越过强平价
 	hit := m.LiqPx.Add(dec("1"))
 	step := mustAdvance(t, s, Bar{
-		InstID: "BTC-USDT-SWAP", Last: hit, High: hit, Low: hit, Ts: 3})
+		InstID: "BTC-USDT-SWAP", Last: hit, MarkPx: hit, High: hit, Low: hit, Ts: 3})
 	if len(step.Liquidations) != 1 {
 		t.Fatalf("空头应被强平，实际 %+v", step)
 	}
@@ -212,7 +212,7 @@ func TestNoLiquidationWhenHealthy(t *testing.T) {
 
 	for i, px := range []string{"77000", "76000", "75000", "74000"} {
 		step := mustAdvance(t, s, Bar{
-			InstID: "BTC-USDT-SWAP", Last: dec(px), High: dec(px), Low: dec(px),
+			InstID: "BTC-USDT-SWAP", Last: dec(px), MarkPx: dec(px), High: dec(px), Low: dec(px),
 			Ts: int64(2 + i)})
 		if len(step.Liquidations) != 0 {
 			m, _ := s.MetricsOf("BTC-USDT-SWAP", types.PosNet)
@@ -300,7 +300,7 @@ func TestLiquidationInLongShortMode(t *testing.T) {
 	// 价格下跌只应爆掉多头，空头反而获利
 	hit := lm.LiqPx.Sub(dec("1"))
 	step := mustAdvance(t, s, Bar{
-		InstID: "BTC-USDT-SWAP", Last: hit, High: hit, Low: hit, Ts: 2})
+		InstID: "BTC-USDT-SWAP", Last: hit, MarkPx: hit, High: hit, Low: hit, Ts: 2})
 	if len(step.Liquidations) != 1 {
 		t.Fatalf("应只爆多头一侧，实际 %d 次", len(step.Liquidations))
 	}

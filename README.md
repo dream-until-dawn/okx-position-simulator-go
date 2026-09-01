@@ -103,6 +103,7 @@ m, _ := sim.MetricsOf("BTC-USD-SWAP", types.PosLong)
 step, _ := sim.Advance(okxsim.Bar{
     InstID: "BTC-USDT-SWAP",
     Last: d("77200"), High: d("78100"), Low: d("76800"), Ts: ts,
+    MarkPx: d("77190"),                            // 必给：缺它会报错，见下
     Funding: &okxsim.Funding{Rate: d("0.0001")},   // 到结算时刻才给，留空即不计
 })
 
@@ -111,6 +112,11 @@ step.Fills         // 本步产生的成交
 step.Liquidations  // 本步发生的强平
 step.Canceled      // 本步被撤销的委托及其原因
 ```
+
+**`MarkPx` 是必给的。** 缺它会直接报错，而不是退回用最新成交价顶替——强平判据本该
+看标记价，用最新价会让插针扫掉本不该爆的仓位，对尾部风险就是强平的策略这是假阴性，
+结果里不留痕迹。标记价来自 OKX 的 `mark-price-candles`，与普通 K 线是两套序列。
+确实拿不到数据时，把 `Config.AllowMarkPxFallback` 设为真表示你接受这份偏差。
 
 `SetMark` 只更新价格、不触发任何风控——这样多个合约在同一时刻的更新顺序就不会
 影响结果。

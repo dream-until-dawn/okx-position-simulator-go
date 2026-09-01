@@ -101,7 +101,7 @@ func richSim(t *testing.T) *Simulator {
 		t.Fatal(err)
 	}
 	if _, err := s.Advance(Bar{
-		InstID: "BTC-USDT-SWAP", Last: dec("82000"),
+		InstID: "BTC-USDT-SWAP", Last: dec("82000"), MarkPx: dec("82000"),
 		High: dec("82000"), Low: dec("81000"), Ts: 6,
 	}); err != nil {
 		t.Fatal(err)
@@ -182,7 +182,7 @@ func TestRestoredSimulatorBehavesIdentically(t *testing.T) {
 	dst := restoredCopy(t, src)
 
 	bars := []Bar{
-		{Last: dec("83000"), High: dec("83500"), Low: dec("82000")},
+		{Last: dec("83000"), MarkPx: dec("83000"), High: dec("83500"), Low: dec("82000")},
 		{Last: dec("79000"), High: dec("83000"), Low: dec("78000")},
 		{Last: dec("71000"), High: dec("79000"), Low: dec("69500")},
 		{Last: dec("96000"), High: dec("96500"), Low: dec("71000")},

@@ -139,17 +139,20 @@ func TestLeanLiquidationCheckAgreesWithMetrics(t *testing.T) {
 	}
 }
 
-// TestRequireMarkPxRefusesToDegrade 开启后，缺标记价即报错而不是悄悄降级。
+// TestMarkPxRequiredByDefault 缺标记价默认即报错，不再悄悄降级。
+//
+// v1.0 起翻了默认值。字段是反过来写的（AllowMarkPxFallback）因为 Go 的零值是
+// false，而我们要的默认是「必须给标记价」——只能让字段表达【选择退出】。
 //
 // 退化的后果很具体：强平判据本该看标记价，用最新成交价会让插针扫掉本不该爆的
 // 仓位。对尾部风险就是强平的策略，这是**假阴性**——参数组合被淘汰，而扫描结果里
-// 不留任何痕迹。
-func TestRequireMarkPxRefusesToDegrade(t *testing.T) {
-	mk := func(require bool) *Simulator {
+// 不留任何痕迹。这类错误不该靠人记得去开一个开关才能避免。
+func TestMarkPxRequiredByDefault(t *testing.T) {
+	mk := func(allowFallback bool) *Simulator {
 		t.Helper()
 		s, err := New(Config{
 			PosMode: types.NetMode, RefData: refdata.MustEmbedded(),
-			DefaultLever: decimal.NewFromInt(5), RequireMarkPx: require,
+			DefaultLever: decimal.NewFromInt(5), AllowMarkPxFallback: allowFallback,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -161,25 +164,30 @@ func TestRequireMarkPxRefusesToDegrade(t *testing.T) {
 	}
 	noMark := Bar{InstID: "BTC-USDT-SWAP", Last: dec("78000"), Ts: 1}
 
-	// 默认行为不变：不给标记价照跑，用最新价顶替
-	if _, err := mk(false).Advance(noMark); err != nil {
-		t.Errorf("默认不该因缺标记价失败: %v", err)
-	}
-
-	s := mk(true)
-	if _, e := s.Advance(noMark); e == nil {
-		t.Fatal("开启 RequireMarkPx 后，缺标记价应当报错")
+	// 默认（零值配置）拒绝降级
+	if _, e := mk(false).Advance(noMark); e == nil {
+		t.Fatal("默认就该拒绝缺标记价的 Bar")
 	} else if !okxerr.HasCode(e, okxerr.CodeParamEmpty) {
 		t.Errorf("错误码 = %v，期望 %s", e, okxerr.CodeParamEmpty)
 	}
 
-	// 给了就照常跑
-	if _, err := s.Advance(Bar{
-		InstID: "BTC-USDT-SWAP", Last: dec("78000"), MarkPx: dec("78010"), Ts: 2,
-	}); err != nil {
-		t.Errorf("给了标记价不该失败: %v", err)
+	// 显式选择退出后才回退到最新价
+	s := mk(true)
+	if _, err := s.Advance(noMark); err != nil {
+		t.Errorf("显式允许回退后不该失败: %v", err)
 	}
-	eq(t, s.MarkPx("BTC-USDT-SWAP"), "78010", "标记价应当用 Bar 给的那个")
+	eq(t, s.MarkPx("BTC-USDT-SWAP"), "78000", "回退时用最新成交价顶替")
+
+	// 给了标记价，两种配置都照常跑，且用的是给的那个
+	for _, allow := range []bool{false, true} {
+		s := mk(allow)
+		if _, err := s.Advance(Bar{
+			InstID: "BTC-USDT-SWAP", Last: dec("78000"), MarkPx: dec("78010"), Ts: 2,
+		}); err != nil {
+			t.Errorf("给了标记价不该失败(allow=%v): %v", allow, err)
+		}
+		eq(t, s.MarkPx("BTC-USDT-SWAP"), "78010", "标记价应当用 Bar 给的那个")
+	}
 }
 
 // TestCheckLiquidationCoversBothLevels 导出的强平检查必须两级都查。

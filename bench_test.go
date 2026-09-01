@@ -112,7 +112,7 @@ func BenchmarkAdvance(b *testing.B) {
 	s := benchSim(b, types.NetMode)
 	mustBenchFill(b, s, "BTC-USDT-SWAP", types.TdIsolated, "4", "78000")
 	bar := Bar{
-		InstID: "BTC-USDT-SWAP", Last: decimal.NewFromInt(78000),
+		InstID: "BTC-USDT-SWAP", Last: decimal.NewFromInt(78000), MarkPx: decimal.NewFromInt(78000),
 		High: decimal.NewFromInt(78500), Low: decimal.NewFromInt(77500),
 	}
 	b.ReportAllocs()

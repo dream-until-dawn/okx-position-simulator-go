@@ -92,11 +92,11 @@ Cancellation.InstID string
 Cancellation.OrdID string
 Cancellation.Reason okxsim.CancelReason
 Config.AcctLv types.AcctLv
+Config.AllowMarkPxFallback bool
 Config.DefaultLever decimal.Decimal
 Config.FeeSchedule *refdata.FeeSchedule
 Config.PosMode types.PosMode
 Config.RefData refdata.Provider
-Config.RequireMarkPx bool
 CrossMetrics.CashBal decimal.Decimal
 CrossMetrics.Ccy string
 CrossMetrics.CloseFee decimal.Decimal
@@ -106,7 +106,7 @@ CrossMetrics.IMR decimal.Decimal
 CrossMetrics.LiqPx decimal.Decimal
 CrossMetrics.MMR decimal.Decimal
 CrossMetrics.MgnRatio decimal.Decimal
-CrossMetrics.OrderFee decimal.Decimal
+CrossMetrics.OrderFrozenFee decimal.Decimal
 CrossMetrics.Upl decimal.Decimal
 Fill.ExecType types.ExecType
 Fill.InstID string

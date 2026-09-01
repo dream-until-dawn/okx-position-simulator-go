@@ -1054,7 +1054,9 @@ testdata/conformance/liquidation-cross.json。要点：
 本不该爆的仓位——对尾部风险就是强平的策略（如做多网格）是假阴性，参数组合被淘汰
 而扫描结果里不留痕迹。
 
-`Config.RequireMarkPx` 已提供，**v1.0 起默认为真**。
+**v1.0 起本库默认拒绝缺标记价的 `Bar`。** 字段写成 `Config.AllowMarkPxFallback`
+而不是 `RequireMarkPx`，是因为 Go 的零值是 `false` 而我们要的默认是「必须给」
+——只能让字段表达【选择退出】，它同时把代价写进了名字：打开它就是接受一次回退。
 
 
 ## 13. 尚未定论

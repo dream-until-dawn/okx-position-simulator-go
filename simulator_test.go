@@ -451,7 +451,7 @@ func TestAdjustMarginFloorCountsUnrealizedLoss(t *testing.T) {
 func TestInstrumentAccessor(t *testing.T) {
 	s := newSim(t, types.NetMode)
 
-	inst, err := s.Instrument("BTC-USDT-SWAP")
+	inst, err := s.InstrumentOf("BTC-USDT-SWAP")
 	if err != nil {
 		t.Fatalf("取合约规格失败: %v", err)
 	}
@@ -462,7 +462,7 @@ func TestInstrumentAccessor(t *testing.T) {
 	// 拿到之后取整方法直接可用
 	eq(t, inst.RoundSize(dec("3.14159")), "3.14", "按 lotSz 取整")
 
-	if _, err := s.Instrument("NOPE-USDT-SWAP"); !okxerr.HasCode(err, okxerr.CodeInstNotExist) {
+	if _, err := s.InstrumentOf("NOPE-USDT-SWAP"); !okxerr.HasCode(err, okxerr.CodeInstNotExist) {
 		t.Errorf("未知合约的错误 = %v，期望 51001", err)
 	}
 }

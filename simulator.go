@@ -28,35 +28,30 @@ type Config struct {
 	// DefaultLever 未经 SetLeverage 显式设置时使用的杠杆，默认 10。
 	DefaultLever decimal.Decimal
 
-	// RequireMarkPx 为真时，Advance 收到没有标记价的 Bar 会直接报错，
-	// 而不是退回用最新成交价顶替。
+	// AllowMarkPxFallback 为真时，Advance 收到没有标记价的 Bar 会退回用最新成交价
+	// 顶替；默认（零值）**不允许**，缺标记价直接报错。
 	//
-	// **默认为假是为了不打断现有调用方，不是因为退化无害。** 退化的后果很具体：
-	// 强平判据本该看标记价，用最新成交价会让插针扫掉本不该爆的仓位。对做多网格
-	// 这类尾部风险就是强平的策略，它会让本来可用的参数组合在扫描里被淘汰——
-	// 而且是假阴性，扫描结果里不留任何痕迹。
+	// 字段是反过来写的：Go 的零值是 false，而我们要的默认是「必须给标记价」，
+	// 所以只能让这个字段表达【选择退出】。它同时把代价写在了名字里——
+	// 打开它就是接受一次回退。
 	//
-	// 所以：拿不到标记价数据、愿意承担这份偏差，就让它保持假；而**一旦你的结论
-	// 依赖强平是否发生**，就该打开它，让缺数据变成一次响亮的失败，而不是一批
-	// 看着正常的错结果。
+	// 退回的后果很具体：强平判据本该看标记价，用最新成交价会让插针扫掉本不该爆的
+	// 仓位。对尾部风险就是强平的策略（如做多网格）这是**假阴性**——参数组合被淘汰，
+	// 而扫描结果里不留任何痕迹。
 	//
-	// ⚠️ **v1.0 会把默认值翻成 true。** 现在默认假只是为了不打断存量调用方。
-	// 届时不供标记价的 Advance 会直接报错，修复是一行：要么在 Bar 里给出
-	// MarkPx，要么显式写下 RequireMarkPx: false 表示你知道自己在做什么。
-	//
-	// 定这一条的规则是（见 docs/okx-rules.md「降级的两只手」）：
+	// 定这一条的规则是（见 docs/okx-rules.md §12「降级的两只手」）：
 	//
 	//	可避免、且会改变离散事件的降级    -> 默认拒绝
 	//	不可避免、或只造成连续偏差的降级  -> 默认允许，但写明偏向
 	//
 	// 标记价落在前一只手：实测 history-mark-price-candles 与 history-candles
-	// **同深**（2024-01-01 两者都有，2022-01-01 两者都无），取得到价格就一定
-	// 取得到标记价，完全可避免；而它改变的是「强平有没有发生」这个离散事件。
-	// 资金费落在后一只手：费率只保留约 3 个月，超窗口不可避免，且造成的是
-	// 连续偏差（系统性高估多头收益）。
+	// **同深**（2024-01-01 两者都有，2022-01-01 两者都无），取得到价格就一定取得到
+	// 标记价，完全可避免；而它改变的是「强平有没有发生」这个离散事件。资金费落在
+	// 后一只手：费率只保留约 3 个月，超窗口不可避免，且造成的是连续偏差。
 	//
-	// 标记价来自 OKX 的 mark-price-candles 接口，与普通 K 线是两套序列。
-	RequireMarkPx bool
+	// 确实拿不到标记价数据、愿意承担这份偏差时才打开它——**并且知道此后的强平结果
+	// 不可信**。标记价来自 OKX 的 mark-price-candles 接口，与普通 K 线是两套序列。
+	AllowMarkPxFallback bool
 }
 
 type positionKey struct {
@@ -140,7 +135,7 @@ func New(cfg Config) (*Simulator, error) {
 // 规则就和模拟器实际用的不是一套，而这种偏差不会报错，只会让结果悄悄不对。
 //
 // 拿到 Instrument 后可直接用它的 RoundSize / RoundPrice / ValidateSize。
-func (s *Simulator) Instrument(instID string) (refdata.Instrument, error) {
+func (s *Simulator) InstrumentOf(instID string) (refdata.Instrument, error) {
 	return s.cfg.RefData.Instrument(instID)
 }
 
