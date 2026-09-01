@@ -21,6 +21,7 @@ AlgoLeg.PxType types.TriggerPxType `json:pxType`
 AlgoLeg.Trailing bool `json:trailing`
 AlgoOrder.AlgoID string
 AlgoOrder.CallbackRatio decimal.Decimal
+AlgoOrder.CloseFraction decimal.Decimal
 AlgoOrder.InstID string
 AlgoOrder.OrdPx decimal.Decimal
 AlgoOrder.OrdType types.AlgoOrdType

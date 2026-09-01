@@ -29,6 +29,20 @@ type AlgoOrder struct {
 	Sz         decimal.Decimal
 	ReduceOnly bool
 
+	// CloseFraction 只接受 1，表示【触发时全平当时的持仓】，与 Sz 互斥。
+	//
+	// 名字像个比例，实际不是：实测 0.5、0.3、2 一律被 OKX 以 51000
+	// 「Parameter closeFraction error」拒绝，只有 1 通过。这里照样只收 1，
+	// 是为了让回测里写错的策略拿到与实盘同一个错误，而不是悄悄按比例平掉。
+	//
+	// **张数在触发那一刻才定。** 实测：下单时持仓 200 张、随后加到 300 张，
+	// 触发后成交 300 张（accFillSz=300），不是下单时的 200。下单时算法委托的
+	// sz 字段读回是空串，持仓变动后再读则是当时的持仓量。
+	//
+	// 这条对网格这类持仓不断变动的策略是实质差别：按下单时定量会在加仓后留下
+	// 平不掉的尾巴，按触发时定量才是真实行为。
+	CloseFraction decimal.Decimal
+
 	// TriggerPx / OrdPx 用于 trigger 类型。
 	//
 	// OrdPx 留空（零值）即触发后按市价成交，给 -1 也一样——判据是「非正数即市价」。
@@ -114,7 +128,17 @@ func (s *Simulator) PlaceAlgoOrder(a AlgoOrder) (AlgoPlaceResult, error) {
 	if err != nil {
 		return AlgoPlaceResult{}, err
 	}
-	if err := inst.ValidateSize(a.Sz); err != nil {
+	if a.CloseFraction.IsPositive() {
+		if !a.CloseFraction.Equal(decimal.NewFromInt(1)) {
+			return AlgoPlaceResult{}, okxerr.New(okxerr.CodeParamError,
+				"closeFraction: 只接受 1（触发时全平），实为 %s——"+
+					"这个名字像比例，但 OKX 实测只认 1", a.CloseFraction)
+		}
+		if a.Sz.IsPositive() {
+			return AlgoPlaceResult{}, okxerr.New(okxerr.CodeParamError,
+				"closeFraction 与 sz 互斥，不能同时给")
+		}
+	} else if err := inst.ValidateSize(a.Sz); err != nil {
 		return AlgoPlaceResult{}, err
 	}
 	if !a.Side.Valid() {
@@ -523,6 +547,21 @@ func (s *Simulator) executeAlgo(a AlgoOrder, leg algoLeg, px decimal.Decimal,
 	ts int64) (*FillResult, error) {
 
 	ordID := algoOrdID(a.AlgoID, leg.kind)
+	// closeFraction 的张数在【触发这一刻】才定，取当时的持仓量。实测确证：
+	// 下单时 200 张、加到 300 张后触发，成交的是 300 张。
+	if a.CloseFraction.IsPositive() {
+		side, err := s.normalizePosSide(a.PosSide)
+		if err != nil {
+			return nil, err
+		}
+		pos, ok := s.pos[positionKey{a.InstID, side}]
+		if !ok || pos.IsEmpty() {
+			// 持仓已经没了，无可平——不报错，与「触发后限价单挂不出去」同样处理
+			return nil, nil
+		}
+		a.Sz = pos.AbsPos()
+		a.ReduceOnly = true
+	}
 	if leg.ordPx.IsPositive() {
 		_, err := s.PlaceOrder(Order{
 			OrdID: ordID, InstID: a.InstID, TdMode: a.TdMode,
