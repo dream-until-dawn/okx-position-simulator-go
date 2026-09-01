@@ -1,6 +1,8 @@
 package okxsim
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -54,6 +56,73 @@ func TestExportedAPIIsFrozen(t *testing.T) {
 		t.Errorf("Simulator 的导出方法与金文件不符：\n%s\n"+
 			"若这是有意的改动，请同时更新本测试里的清单——"+
 			"v1.0 之后每个导出符号都是永久承诺", diff)
+	}
+}
+
+// exportedStructs 是要逐字段冻结的导出结构体。
+//
+// **新增一个导出结构体也必须改这里**——漏加就等于那个类型完全不受冻结保护，
+// 而漏加不会有任何提示。这份清单本身就是「有没有漏」的答案。
+//
+// Simulator 不在其中：它的字段全部未导出，对外形态由方法集决定，
+// 见 TestExportedAPIIsFrozen。CancelReason 与 LiquidationKind 是字符串类型，没有字段。
+func exportedStructs() []any {
+	return []any{
+		AlgoLeg{}, AlgoOrder{}, AlgoPlaceResult{}, AlgoTrigger{}, Balance{},
+		BalanceView{}, Bar{}, Cancellation{}, Config{}, CrossMetrics{}, Fill{},
+		FillResult{}, Funding{}, FundingResult{}, LeverageSetting{}, Liquidation{},
+		MaxSize{}, Metrics{}, Order{}, OrderCost{}, OrderReq{}, PendingAlgo{},
+		PendingOrder{}, PlaceResult{}, Position{}, PositionView{}, Shortfall{},
+		ShortfallError{}, State{}, StepResult{},
+	}
+}
+
+// TestExportedFieldsAreFrozen 把导出结构体的字段形态记成金文件。
+//
+// TestExportedAPIIsFrozen 只冻方法集，而这个库的价值主张是「字段级与 OKX 同构」
+// ——字段本身就是 API，比方法集更是。这个口子已经漏过一次：v0.9.4 给 FillResult
+// 加 Fill 字段，方法集那份金文件毫无反应。加字段是安全的，但**改名与删字段走的是
+// 同一个口子**，而 v1.0 之后那是破坏性变更。
+//
+// json tag 也冻：State 与 PendingOrder 这些会被存档，改 tag 会让旧存档静默读不回来，
+// 而不是报错。
+func TestExportedFieldsAreFrozen(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("testdata", "api-shape.txt"))
+	if err != nil {
+		t.Fatalf("读取金文件失败: %v", err)
+	}
+	var want []string
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		want = append(want, line)
+	}
+	sort.Strings(want)
+
+	var got []string
+	for _, v := range exportedStructs() {
+		rt := reflect.TypeOf(v)
+		for i := 0; i < rt.NumField(); i++ {
+			f := rt.Field(i)
+			if !f.IsExported() {
+				continue
+			}
+			line := rt.Name() + "." + f.Name + " " + f.Type.String()
+			if tag, ok := f.Tag.Lookup("json"); ok {
+				line += " `json:" + tag + "`"
+			}
+			got = append(got, line)
+		}
+	}
+	sort.Strings(got)
+
+	if diff := diffNames(want, got); diff != "" {
+		t.Errorf("导出字段与金文件不符：\n%s\n"+
+			"若这是有意的改动，请手工把上面的行同步进 testdata/api-shape.txt。"+
+			"这里没有自动更新开关——照着改一遍的过程，"+
+			"就是「这个名字要用十年，它对吗」这一问被真正问出口的时刻", diff)
 	}
 }
 
