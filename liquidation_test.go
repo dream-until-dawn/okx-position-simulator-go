@@ -490,3 +490,143 @@ func TestTieredReductionPenaltyUsesLowerTier(t *testing.T) {
 	}
 	t.Fatal("夹具里没有 subType=101 的部分强平账单")
 }
+
+// TestCrossLiquidationAgainstRealEvent 回放一次真实的全仓强平。
+//
+// 2026-09-01 的 ETH-USD-SWAP 全仓多头爆仓，账单链与逐仓**不是同一套**：
+//
+//	                  逐仓          全仓
+//	阶梯减仓          subType 101   subType 100
+//	全部强平          subType 105   subType 104
+//	损失落点          仓位保证金    现金余额
+//	账单的 pnl 字段   纯盈亏        **含罚金**
+//
+// 最后一行是解析上的陷阱：逐仓账单的 pnl 与公式逐位相同，罚金要靠保证金对账反推；
+// 全仓账单的 pnl 把罚金折了进去。本测试用的是**拆开之后**的量，拆法记在夹具里。
+//
+// 这次事件还照出了一处此前算错的：罚金率按【本笔平掉的张数】自己查档。减 17577 张
+// 用二档 0.005，而减仓后的 8000 张在一档 0.004——「按减仓后档位」被排除。
+func TestCrossLiquidationAgainstRealEvent(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("testdata", "conformance", "liquidation-cross.json"))
+	if err != nil {
+		t.Fatalf("读取夹具失败: %v", err)
+	}
+	var fx struct {
+		Instrument json.RawMessage `json:"instrument"`
+		Tiers      json.RawMessage `json:"tiers"`
+		CashBefore string          `json:"cashBefore"`
+		AvgPx      string          `json:"avgPx"`
+		PosBefore  string          `json:"posBefore"`
+		Bills      []struct {
+			SubType string `json:"subType"`
+			Sz      string `json:"sz"`
+			BalChg  string `json:"balChg"`
+			Bal     string `json:"bal"`
+		} `json:"bills"`
+		Decomposed []struct {
+			Sz          string `json:"sz"`
+			Px          string `json:"px"`
+			RealizedPnl string `json:"realizedPnl"`
+			Penalty     string `json:"penalty"`
+			BillFee     string `json:"billFee"`
+			PenaltyTier string `json:"penaltyTier"`
+		} `json:"decomposed"`
+	}
+	if err := json.Unmarshal(b, &fx); err != nil {
+		t.Fatalf("解析夹具失败: %v", err)
+	}
+	if len(fx.Decomposed) != 2 {
+		t.Fatalf("夹具应当有两段（减仓 + 全平），实为 %d 段", len(fx.Decomposed))
+	}
+	var inst refdata.Instrument
+	if err := json.Unmarshal(fx.Instrument, &inst); err != nil {
+		t.Fatal(err)
+	}
+	var tiers []refdata.PositionTier
+	if err := json.Unmarshal(fx.Tiers, &tiers); err != nil {
+		t.Fatal(err)
+	}
+	tbl, err := refdata.NewTierTable(refdata.TierKey{
+		InstType: types.InstSwap, MgnMode: types.MgnCross, Family: inst.InstFamily}, tiers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := refdata.NewSnapshotBuilder(1).AddInstruments(inst).AddTierTable(tbl).
+		SetFeeSchedule(refdata.DefaultFeeSchedule()).Build()
+	s, err := New(Config{PosMode: types.LongShortMode, RefData: snap})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Deposit(inst.SettleCcy, dec(fx.CashBefore)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetPosition(Position{
+		InstID: inst.InstID, MgnMode: types.MgnCross, PosSide: types.PosLong,
+		Pos: dec(fx.PosBefore), AvgPx: dec(fx.AvgPx), Lever: dec("66"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 第一段：阶梯减仓，25577 -> 8000（一档上限）
+	st := fx.Decomposed[0]
+	if err := s.SetMarkPx(inst.InstID, dec(st.Px)); err != nil {
+		t.Fatal(err)
+	}
+	liqs, err := s.CheckLiquidation(inst.InstID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(liqs) != 1 {
+		t.Fatalf("这一步应当只有一笔阶梯减仓，实为 %d 笔", len(liqs))
+	}
+	l := liqs[0]
+	if l.Kind != LiqPartial {
+		t.Errorf("应当是阶梯减仓，实为 %v", l.Kind)
+	}
+	eq(t, l.Sz, st.Sz, "减掉的张数")
+	near(t, l.Pnl, dec(st.RealizedPnl), "1e-15", "减仓的真实盈亏")
+	near(t, l.Fee, dec(st.BillFee), "1e-15", "减仓的手续费")
+	near(t, l.Penalty, dec(st.Penalty), "1e-15",
+		"减仓的罚金——按【平掉的张数】查档，第"+st.PenaltyTier+"档")
+	p, _ := s.PositionOf(inst.InstID, types.PosLong)
+	eq(t, p.Pos, "8000", "减到一档上限")
+	near(t, s.CashBal(inst.SettleCcy), dec(fx.Bills[0].Bal), "1e-15",
+		"减仓后的现金应与账单的 bal 一致")
+
+	// 第二段：仍未获救，全平
+	st = fx.Decomposed[1]
+	if err := s.SetMarkPx(inst.InstID, dec(st.Px)); err != nil {
+		t.Fatal(err)
+	}
+	liqs, err = s.CheckLiquidation(inst.InstID, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(liqs) != 1 {
+		t.Fatalf("这一步应当只有一笔全平，实为 %d 笔", len(liqs))
+	}
+	l = liqs[0]
+	if l.Kind != LiqFull {
+		t.Errorf("应当是全部强平，实为 %v", l.Kind)
+	}
+	eq(t, l.Sz, "8000", "全平的张数")
+	near(t, l.Penalty, dec(st.Penalty), "1e-15",
+		"全平的罚金——8000 张落在第"+st.PenaltyTier+"档")
+	if q, ok := s.PositionOf(inst.InstID, types.PosLong); ok && !q.IsEmpty() {
+		t.Errorf("应当已全平，实剩 %s 张", q.Pos)
+	}
+
+	// 封顶：现金恰好归零，跌破的部分记为超额
+	eq(t, s.CashBal(inst.SettleCcy), "0", "现金封顶归零，不会变成负数")
+	if !l.Excess.IsPositive() {
+		t.Errorf("这次是穿仓，应当有超额由风险准备金承担，实为 %s", l.Excess)
+	}
+	near(t, l.Excess, dec(fx.Bills[1].Bal).Neg(), "1e-15",
+		"超额应等于账单里那个负余额，随后由 subType 108 补回")
+	// 损失总额恰好等于该币种原有的现金
+	var loss decimal.Decimal
+	for _, x := range []Liquidation{{Loss: dec(fx.Bills[0].BalChg).Neg()}, {Loss: l.Loss}} {
+		loss = loss.Add(x.Loss)
+	}
+	near(t, loss, dec(fx.CashBefore), "1e-15", "损失总额封顶为该币种的现金")
+}
