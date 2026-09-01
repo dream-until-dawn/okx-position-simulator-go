@@ -246,3 +246,71 @@ func BenchmarkPartialCloseChain(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkAdvanceHedged 逐仓 + 开平仓模式——回测引擎最常选的组合。
+//
+// 与 BenchmarkAdvance（买卖模式）的差别在强平判据那一层：开平仓模式要把多空两侧
+// 各查一遍，而 PosSides() 每次调用都会分配一个新切片。
+func BenchmarkAdvanceHedged(b *testing.B) {
+	s := benchSim(b, types.LongShortMode)
+	if err := s.SetLeverage("BTC-USDT-SWAP", types.MgnIsolated, types.PosLong,
+		decimal.NewFromInt(5)); err != nil {
+		b.Fatal(err)
+	}
+	if _, err := s.Fill(Fill{
+		InstID: "BTC-USDT-SWAP", TdMode: types.TdIsolated, Side: types.Buy,
+		PosSide: types.PosLong, Sz: decimal.NewFromInt(4),
+		Px: decimal.NewFromInt(78000), ExecType: types.Taker, Ts: 1,
+	}); err != nil {
+		b.Fatal(err)
+	}
+	bar := Bar{
+		InstID: "BTC-USDT-SWAP", Last: decimal.NewFromInt(78000),
+		High: decimal.NewFromInt(78500), Low: decimal.NewFromInt(77500),
+		MarkPx: decimal.NewFromInt(78000),
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bar.Ts = int64(i)
+		if _, err := s.Advance(bar); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkAdvanceHedgedBothSides 双向持仓：两侧都要走完整判据。
+func BenchmarkAdvanceHedgedBothSides(b *testing.B) {
+	s := benchSim(b, types.LongShortMode)
+	for _, side := range []types.PosSide{types.PosLong, types.PosShort} {
+		if err := s.SetLeverage("BTC-USDT-SWAP", types.MgnIsolated, side,
+			decimal.NewFromInt(5)); err != nil {
+			b.Fatal(err)
+		}
+	}
+	for _, c := range []struct {
+		side types.Side
+		pos  types.PosSide
+	}{{types.Buy, types.PosLong}, {types.Sell, types.PosShort}} {
+		if _, err := s.Fill(Fill{
+			InstID: "BTC-USDT-SWAP", TdMode: types.TdIsolated, Side: c.side,
+			PosSide: c.pos, Sz: decimal.NewFromInt(4),
+			Px: decimal.NewFromInt(78000), ExecType: types.Taker, Ts: 1,
+		}); err != nil {
+			b.Fatal(err)
+		}
+	}
+	bar := Bar{
+		InstID: "BTC-USDT-SWAP", Last: decimal.NewFromInt(78000),
+		High: decimal.NewFromInt(78500), Low: decimal.NewFromInt(77500),
+		MarkPx: decimal.NewFromInt(78000),
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bar.Ts = int64(i)
+		if _, err := s.Advance(bar); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

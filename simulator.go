@@ -14,7 +14,15 @@ type Config struct {
 	// AcctLv 账户模式，默认 acctLv=2 现货合约模式。
 	AcctLv types.AcctLv
 
-	// PosMode 持仓方式，默认买卖模式。
+	// PosMode 持仓方式，**默认开平仓模式**（long_short_mode）。
+	//
+	// 与 OKX 一致：实测模拟盘账户的 posMode 即为 long_short_mode，而回测引擎
+	// 最常用的组合也是「逐仓 + 开平仓」。
+	//
+	// ⚠️ v1.1.0 起由买卖模式改为此值。这是个破坏性变更，但**破得响亮**：
+	// 开平仓模式要求每笔成交显式给出 long 或 short，留空会当场报错而不是
+	// 悄悄按 net 处理。所以此前依赖默认值的调用方会立刻看到错误，
+	// 而不是拿到一批口径不同的结果。
 	PosMode types.PosMode
 
 	// RefData 规则数据源。回测请用不可变的 refdata.Snapshot，
@@ -101,7 +109,7 @@ func New(cfg Config) (*Simulator, error) {
 		return nil, okxerr.New(okxerr.CodeParamError, "acctLv: 非法的账户模式 %q", cfg.AcctLv)
 	}
 	if cfg.PosMode == "" {
-		cfg.PosMode = types.NetMode
+		cfg.PosMode = types.LongShortMode
 	}
 	if !cfg.PosMode.Valid() {
 		return nil, okxerr.New(okxerr.CodeParamError, "posMode: 非法的持仓方式 %q", cfg.PosMode)
@@ -345,6 +353,11 @@ func (s *Simulator) Fill(f Fill) (FillResult, error) {
 	}
 	if !f.Side.Valid() {
 		return FillResult{}, okxerr.New(okxerr.CodeParamError, "side: 非法方向 %q", f.Side)
+	}
+	if f.TdMode == "" {
+		// 留空即逐仓——与 PosMode 的默认配套，「逐仓 + 开平仓」是最常用的组合。
+		// 这一条是纯增量：此前留空直接报错，所以没有任何既有行为因此改变。
+		f.TdMode = types.TdIsolated
 	}
 	mgnMode, ok := f.TdMode.MgnMode()
 	if !ok {

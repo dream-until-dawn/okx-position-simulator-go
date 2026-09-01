@@ -219,6 +219,10 @@ func (s *Simulator) PlaceOrder(o Order) (PlaceResult, error) {
 	if o.OrdType == "" {
 		o.OrdType = types.OrdLimit
 	}
+	if o.TdMode == "" {
+		// 留空即逐仓，与 Fill 同规则，见 Config.PosMode 的说明。
+		o.TdMode = types.TdIsolated
+	}
 	if !o.OrdType.Valid() {
 		return PlaceResult{}, okxerr.New(okxerr.CodeParamError,
 			"ordType: 非法的委托类型 %q", o.OrdType)

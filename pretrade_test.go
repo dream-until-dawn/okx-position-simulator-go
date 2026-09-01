@@ -299,7 +299,10 @@ func TestMaxSizeAccountsForPendingOrders(t *testing.T) {
 }
 
 func TestPlaceOrderInsufficientBalance(t *testing.T) {
-	s, err := New(Config{RefData: mustEmbedded(t), DefaultLever: decimal.NewFromInt(5)})
+	// 显式声明买卖模式：这条验的是余额不足，与持仓方式无关，
+	// 而默认值自 v1.1.0 起是开平仓模式。
+	s, err := New(Config{PosMode: types.NetMode, RefData: mustEmbedded(t),
+		DefaultLever: decimal.NewFromInt(5)})
 	if err != nil {
 		t.Fatal(err)
 	}

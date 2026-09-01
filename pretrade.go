@@ -66,6 +66,10 @@ func (s *Simulator) OrderCost(req OrderReq) (OrderCost, error) {
 	if !req.Side.Valid() {
 		return OrderCost{}, okxerr.New(okxerr.CodeParamError, "side: 非法方向 %q", req.Side)
 	}
+	if req.TdMode == "" {
+		// 与 Fill 同规则：留空即逐仓，见 Config.PosMode 的说明。
+		req.TdMode = types.TdIsolated
+	}
 	mgnMode, ok := req.TdMode.MgnMode()
 	if !ok {
 		return OrderCost{}, okxerr.New(okxerr.CodeParamError,

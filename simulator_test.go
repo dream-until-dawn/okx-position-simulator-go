@@ -199,7 +199,10 @@ func TestBalanceComposition(t *testing.T) {
 // ---- 错误路径 ----
 
 func TestInsufficientBalance(t *testing.T) {
-	s, err := New(Config{RefData: refdata.MustEmbedded(), DefaultLever: decimal.NewFromInt(5)})
+	// 显式声明买卖模式：这条验的是余额不足，与持仓方式无关，
+	// 而默认值自 v1.1.0 起是开平仓模式。
+	s, err := New(Config{PosMode: types.NetMode, RefData: refdata.MustEmbedded(),
+		DefaultLever: decimal.NewFromInt(5)})
 	if err != nil {
 		t.Fatalf("新建模拟器失败: %v", err)
 	}
