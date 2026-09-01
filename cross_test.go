@@ -1056,7 +1056,7 @@ func TestCrossMgnRatioWithPendingOrders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	eq(t, base.OrderFee, "0", "没有挂单时不该有挂单手续费")
+	eq(t, base.OrderFrozenFee, "0", "没有挂单时不该有挂单手续费")
 	near(t, base.Equity, base.CashBal.Add(base.Upl), "1e-18",
 		"没有挂单时权益就是现金加浮盈")
 
@@ -1078,11 +1078,11 @@ func TestCrossMgnRatioWithPendingOrders(t *testing.T) {
 	}
 
 	// 分子：扣掉挂单冻结的开仓手续费
-	if !m.OrderFee.IsPositive() {
+	if !m.OrderFrozenFee.IsPositive() {
 		t.Fatal("含挂单时应当有挂单手续费")
 	}
-	near(t, m.OrderFee, o.Cost.Fee, "1e-18", "挂单手续费应当等于该委托冻结的那份")
-	near(t, m.Equity, m.CashBal.Add(m.Upl).Sub(m.OrderFee), "1e-18",
+	near(t, m.OrderFrozenFee, o.Cost.Fee, "1e-18", "挂单手续费应当等于该委托冻结的那份")
+	near(t, m.Equity, m.CashBal.Add(m.Upl).Sub(m.OrderFrozenFee), "1e-18",
 		"权益 = 现金 + 全仓浮盈 − 挂单开仓手续费")
 
 	// 分母：挂单也计一份平仓手续费，故 CloseFee 应按【合并】名义算

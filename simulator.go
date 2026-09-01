@@ -140,7 +140,7 @@ func New(cfg Config) (*Simulator, error) {
 // 规则就和模拟器实际用的不是一套，而这种偏差不会报错，只会让结果悄悄不对。
 //
 // 拿到 Instrument 后可直接用它的 RoundSize / RoundPrice / ValidateSize。
-func (s *Simulator) Instrument(instID string) (refdata.Instrument, error) {
+func (s *Simulator) InstrumentOf(instID string) (refdata.Instrument, error) {
 	return s.cfg.RefData.Instrument(instID)
 }
 

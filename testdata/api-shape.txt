@@ -106,7 +106,7 @@ CrossMetrics.IMR decimal.Decimal
 CrossMetrics.LiqPx decimal.Decimal
 CrossMetrics.MMR decimal.Decimal
 CrossMetrics.MgnRatio decimal.Decimal
-CrossMetrics.OrderFee decimal.Decimal
+CrossMetrics.OrderFrozenFee decimal.Decimal
 CrossMetrics.Upl decimal.Decimal
 Fill.ExecType types.ExecType
 Fill.InstID string

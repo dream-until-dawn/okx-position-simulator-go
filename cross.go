@@ -129,8 +129,12 @@ type CrossMetrics struct {
 	// 残差 1e-17。漏掉它会让含挂单时的保证金率偏大——也就是偏乐观。
 	Equity decimal.Decimal
 
-	// OrderFee 是挂单冻结的开仓手续费合计，已从 Equity 中扣除。
-	OrderFee decimal.Decimal
+	// OrderFrozenFee 是挂单冻结的【开仓】手续费合计，已从 Equity 中扣除。
+	//
+	// 名字要带 Frozen：本结构里已有一个 CloseFee，而那一项**也包含挂单的那份**
+	// （平仓手续费）。只叫 OrderFee 的话，两个字段并列时分不清哪个是开仓、
+	// 哪个是平仓。Frozen 同时对应 OKX 的 ordFrozen 口径。
+	OrderFrozenFee decimal.Decimal
 
 	IMR decimal.Decimal // 初始保证金合计，含挂单占用
 	MMR decimal.Decimal // 维持保证金合计，含挂单占用
@@ -241,7 +245,7 @@ func (s *Simulator) crossMetrics(ccy string, full bool) (CrossMetrics, error) {
 			m.IMR = m.IMR.Add(o.Cost.Margin)
 		}
 		// 挂单冻结的开仓手续费要从权益里扣掉，实测确证，见 CrossMetrics.Equity
-		m.OrderFee = m.OrderFee.Add(o.Cost.Fee)
+		m.OrderFrozenFee = m.OrderFrozenFee.Add(o.Cost.Fee)
 
 		tier, err := s.pendingTier(o, inst)
 		if err != nil {
@@ -258,7 +262,7 @@ func (s *Simulator) crossMetrics(ccy string, full bool) (CrossMetrics, error) {
 		m.CloseFee = m.CloseFee.Add(nom.Mul(rate.Taker.Abs()))
 	}
 
-	m.Equity = m.CashBal.Add(m.Upl).Sub(m.OrderFee)
+	m.Equity = m.CashBal.Add(m.Upl).Sub(m.OrderFrozenFee)
 	if den := m.MMR.Add(m.CloseFee); !den.IsZero() {
 		m.MgnRatio = div(m.Equity, den)
 	}

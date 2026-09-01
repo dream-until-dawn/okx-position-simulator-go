@@ -130,6 +130,11 @@ v1.0.0 是单向门：发布 v2 就得给 module path 加 `/v2` 后缀，而 v0 
 改清单、从而出现在 diff 里；`TestPriceAccessorsArePaired` 保证以后加第四条行情时
 不会再走样。
 
+**后来发现守卫少了一条。** 上面两条只管住了「导出面有没有变」与「行情读写配不配对」，
+而「按键查询带 `Of`」这条一直靠人记——于是 v0.9.1 加的 `Instrument(instID)` 就这么
+溜了过去，形状与 `BalanceOf` 完全一样却没带 `Of`，直到 v1.0 前的定型审查才发现。
+现已补上 `TestKeyedLookupsCarryOf`。
+
 ### v0.9.1 —— 外部试跑撞出来的三处缺口
 
 以外部项目身份 `go get` 之后写了个迷你回测引擎真用一遍（读 K 线、算信号、按可用
@@ -175,6 +180,7 @@ v1.0.0 是单向门：发布 v2 就得给 module path 加 `/v2` 后缀，而 v0 
 |---|---|
 | **资金费** | 结算机制已按真实账单逐条验证，但 OKX 的历史费率只保留约 3 个月（实测四个合约全部截止在同一天，距今 97 天）。超出该窗口的回测取不到真实费率，须自行接第三方数据源、用常数近似或不计资金费。模拟器不产生费率——那是市场结果，回测预测它与预测价格无异。`Bar.Funding` 留空即不计 |
 | ~~**阶梯减仓（逐仓）**~~ | **已于 2026-08-31 实测**，见 okx-rules.md §7 与 testdata/conformance/liquidation-tiered-isolated.json。真实事件照出两处此前算错的：罚金按【减仓后】档位的 mmr 率算（不是减仓前），保证金按实际盈亏/手续费/罚金扣减（不是按张数比例释放）。两处差额同源，都来自那 0.005 的率差 |
+| ~~**v1.0 待办：v0.9.0 之后新增导出面的定型审查**~~ | **已于 2026-09-01 完成。** v0.9.0 的「API 打磨」之后又加了 5 个方法（CheckLiquidation、State、Restore、Instrument、MetricsAt）与 4 处字段（FillResult.Fill、Config.RequireMarkPx、AlgoOrder.CloseFraction、CrossMetrics.OrderFee），它们没走过同一道审查。照 v0.9.0 那两条规则过了一遍，改了两处：`Instrument` -> `InstrumentOf`（按键查询返回复合结果必须带 Of，它与 BalanceOf 形状完全一样却漏了）；`CrossMetrics.OrderFee` -> `OrderFrozenFee`（与兄弟字段 CloseFee 并列时分不清开仓还是平仓）。并把这条规则做成机械守卫 TestKeyedLookupsCarryOf，此后不会再靠人记 |
 | **v1.0 待办：RequireMarkPx 翻默认值** | **已拍板，未执行。** v1.0 起 `Config.RequireMarkPx` 默认为真，缺标记价的 Advance 直接报错。依据是「降级的两只手」这条规则（见 okx-rules.md §12）：标记价可避免（实测 history-mark-price-candles 与 history-candles 同深）且改变强平这一离散事件，落在「默认拒绝」那只手。**连带必须改 5 个 Advance 示例与 README——它们现在全都没给 MarkPx，等于库自己在教降级用法。** 只能在 v1.0 那一刻做，现在做就是两次破坏性变更 |
 | **历史标记价的数据供给** | 本库的 `Bar.MarkPx` 一直在，缺失时退回最新成交价。数据侧要 OKX 的 mark-price-candles（与普通 K 线是两套序列），那是上游数据源的活。本库这侧已加 `Config.RequireMarkPx`：开启后缺标记价即报错，把无声的偏差变成响亮的失败。默认关是为了不打断现有调用方，不是因为退化无害——强平判据用最新成交价会让插针扫掉本不该爆的仓位，对尾部风险就是强平的策略（如做多网格）是**假阴性**，扫描结果里不留痕迹 |
 | ~~**阶梯减仓（全仓）**~~ | **已于 2026-09-01 实测**。全仓同样走阶梯减仓：ETH-USD-SWAP 25577 张（二档）先减到 8000 张（一档上限），90 秒后仍未获救才全平。已实现 |
