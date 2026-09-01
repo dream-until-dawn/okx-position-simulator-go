@@ -576,7 +576,8 @@ func (s *Simulator) BalanceOf(ccy string) (Balance, error) {
 		b.IsoEq = b.IsoEq.Add(p.Margin).Add(upl)
 	}
 
-	cm, err := s.CrossMetricsOf(ccy)
+	// 只读 imr/mmr/保证金率，不读强平价——所以别让它去算 crossLiquidationPx。
+	cm, err := s.crossMetrics(ccy, true, false)
 	if err != nil {
 		return Balance{}, err
 	}

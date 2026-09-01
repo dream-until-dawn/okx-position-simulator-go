@@ -1109,3 +1109,94 @@ func TestCrossMgnRatioWithPendingOrders(t *testing.T) {
 			"实为 %s vs %s——放大得不够，这条测试分辨不出对错", naive, m.MgnRatio)
 	}
 }
+
+// TestCrossMetricsEmptyPathIsEquivalent 钉住「没有全仓敞口时的早退」与完整路径等价。
+//
+// 早退是为了躲开尾部那几次跨指数的 decimal 加减：零值的指数是 0，而现金余额经
+// div 之后指数常是 -20，两者相加要先算 10^20 对齐。上游网格引擎实测这笔钱在
+// 286 万个子步、零全仓仓位的回测里占了全程 10.34% CPU。
+//
+// 但早退是条捷径，捷径必须逐字段等价——否则省下来的时间会以「某个字段悄悄变成
+// 零值」的形式还回去。这里把两条路径的每个字段都比一遍。
+func TestCrossMetricsEmptyPathIsEquivalent(t *testing.T) {
+	fx := loadCrossFixture(t)
+	snap := crossSnapshot(t, fx)
+	s, err := New(Config{PosMode: types.LongShortMode, RefData: snap})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Deposit("USDT", dec("10000")); err != nil {
+		t.Fatal(err)
+	}
+	// 制造一个指数为 -20 的现金余额：早退与完整路径的差别正出在这种数上
+	if _, err := s.Fill(Fill{
+		InstID: "ETH-USDT-SWAP", TdMode: types.TdIsolated, Side: types.Buy,
+		PosSide: types.PosLong, Sz: dec("3"), Px: dec("2555.55"),
+		ExecType: types.Taker, Ts: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if s.CashBal("USDT").Exponent() >= 0 {
+		t.Fatalf("现金余额的指数是 %d，这条测试要的是个负指数的余额",
+			s.CashBal("USDT").Exponent())
+	}
+
+	// 此时账户里只有逐仓仓位，USDT 下没有任何全仓敞口 —— 走的是早退
+	got, err := s.CrossMetricsOf("USDT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.HasPosition {
+		t.Fatal("这条测试要的是「没有全仓敞口」的状态")
+	}
+	want := CrossMetrics{Ccy: "USDT", CashBal: s.CashBal("USDT"),
+		Equity: s.CashBal("USDT")}
+	for _, c := range []struct {
+		name     string
+		got, exp decimal.Decimal
+	}{
+		{"CashBal", got.CashBal, want.CashBal},
+		{"Equity", got.Equity, want.Equity},
+		{"Upl", got.Upl, decimal.Zero},
+		{"IMR", got.IMR, decimal.Zero},
+		{"MMR", got.MMR, decimal.Zero},
+		{"CloseFee", got.CloseFee, decimal.Zero},
+		{"OrderFrozenFee", got.OrderFrozenFee, decimal.Zero},
+		{"MgnRatio", got.MgnRatio, decimal.Zero},
+		{"LiqPx", got.LiqPx, decimal.Zero},
+	} {
+		if !c.got.Equal(c.exp) {
+			t.Errorf("%s = %s，期望 %s", c.name, c.got, c.exp)
+		}
+	}
+	// 连指数也要一样——否则序列化出来的字符串会变
+	if got.Equity.Exponent() != s.CashBal("USDT").Exponent() {
+		t.Errorf("早退给出的权益指数 %d 与现金 %d 不同，序列化结果会变",
+			got.Equity.Exponent(), s.CashBal("USDT").Exponent())
+	}
+	if got.Equity.String() != s.CashBal("USDT").String() {
+		t.Errorf("早退给出的权益 %q 与现金 %q 字符串不同",
+			got.Equity.String(), s.CashBal("USDT").String())
+	}
+
+	// 有敞口时照常走完整路径
+	if err := s.SetLeverage("ETH-USDT-SWAP", types.MgnCross, types.PosShort,
+		dec("10")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Fill(Fill{
+		InstID: "ETH-USDT-SWAP", TdMode: types.TdCross, Side: types.Sell,
+		PosSide: types.PosShort, Sz: dec("5"), Px: dec("2555.55"),
+		ExecType: types.Taker, Ts: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	full, err := s.CrossMetricsOf("USDT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !full.HasPosition || !full.MMR.IsPositive() || !full.MgnRatio.IsPositive() {
+		t.Errorf("有敞口时应当走完整路径，实为 HasPosition=%v MMR=%s MgnRatio=%s",
+			full.HasPosition, full.MMR, full.MgnRatio)
+	}
+}
