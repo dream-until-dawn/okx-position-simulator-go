@@ -344,6 +344,10 @@ func (s *Simulator) reduceToTier(key positionKey, m Metrics,
 	if err != nil {
 		return Liquidation{}, err
 	}
+	tbl, err := refdata.TierTableFor(s.cfg.RefData, inst, pos.MgnMode)
+	if err != nil {
+		return Liquidation{}, err
+	}
 
 	// 减到目标档位的上限即可降档；按 lotSz 取整，宁可多减一档也不要减不到位
 	keep := refdata.FloorToStep(target.MaxSz, inst.LotSz)
@@ -358,17 +362,27 @@ func (s *Simulator) reduceToTier(key positionKey, m Metrics,
 	pnl := realizedPnl(inst, pos.SignedPos(), cut, pos.AvgPx, px)
 	fee := nom.Mul(rate.Taker.Abs()).Neg()
 
-	// 罚金按【减仓后】所在档位的维持保证金率算，不是减仓前的。
+	// 罚金率按【本笔平掉的张数】自己查档，不是减仓前、也不是减仓后的档位。
 	//
-	// 这一条由一次真实的阶梯减仓确证：FIL-USDT-SWAP 空头 50 万张（二档 mmr 0.015）
-	// 减掉 25 万张，名义 17022.5，实际罚金 170.225 —— 反推率恰为 0.01，即减仓后
-	// 25 万张所在的一档。按减仓前的 0.015 会算成 255.34，多出 85.11。
+	// 两次真实事件才把三种解释区分开——单看任何一次都分不出来：
 	//
-	// 同一样本无法区分另外两种解释：「被减掉的那部分自己查档」（25 万张也落在一档）
-	// 与「目标档位的率」（正是 target）。三者在这里给出同一个数，要区分得有一次
-	// 从三档减到二档、而被减部分落在一档的样本。此处取 target.MMR——它与阶梯减仓
-	// 的语义最直白：减到哪一档，就按哪一档收。见 docs/okx-rules.md §7。
-	penalty := nom.Mul(target.MMR).Neg()
+	//	逐仓 FIL-USDT-SWAP  50 万张减掉 25 万张，罚金反推率 0.01。
+	//	                    平掉的 25 万张在一档、减仓后的 25 万张也在一档，两者同值；
+	//	                    但减仓前的 50 万张在二档 0.015 —— 排除「按减仓前」
+	//	全仓 ETH-USD-SWAP   25577 张减掉 17577 张，罚金反推率 0.005。
+	//	                    平掉的 17577 张在二档；而减仓后的 8000 张在一档 0.004
+	//	                    —— 排除「按减仓后」
+	//
+	// 两次都成立的只剩「按平掉的张数查档」。用它复算逐仓那条完整链路，损失恰好
+	// 封顶在 843.234041 = 仓位保证金，差为 0。见 docs/okx-rules.md §7。
+	//
+	// 此前这里取的是 target.MMR（减仓后的档位）。在 FIL 那个样本上两者同值，
+	// 所以一直没露馅——全仓这次的减仓量与保留量落在不同档位，才照出来。
+	penTier, err := tbl.Lookup(cut)
+	if err != nil {
+		return Liquidation{}, err
+	}
+	penalty := nom.Mul(penTier.MMR).Neg()
 
 	// 保证金按【实际发生的盈亏、手续费与罚金】扣减，**不是按张数比例释放**。
 	//
@@ -419,26 +433,36 @@ func signOf(d decimal.Decimal) decimal.Decimal {
 	return decimal.Zero
 }
 
-// checkCrossLiquidation 检查某结算币种的全仓整体是否触及强平线。
+// checkCrossLiquidation 检查某结算币种的全仓整体是否触及强平线，并在触及时了结。
 //
 // 全仓的风险是币种级的：同一结算币下的所有全仓仓位共担一份权益，因此触发判据也
-// 只有一个——该币种的全仓保证金率 ≤ 1。触发后该币种下的全仓仓位一并了结。
+// 只有一个——该币种的全仓保证金率 ≤ 1。
 //
-// ⚠️ **本路径尚未实测。** 触发判据本身是可靠的：保证金率的公式经 13 个真实快照
-// 逐项核对。但触发之后 OKX 究竟怎么了结，本项目没有观察到——真实全仓爆仓需要
-// 一个不带对冲的裸仓位吃掉整个币种的现金，而模拟盘上的资金规模不足以在可控时间内
-// 复现。故结算方式是照【已实测的逐仓强平】平移过来的：按标记价成交、收一笔吃单
-// 手续费、再收一笔等于维持保证金的罚金，损失封顶、超额由风险准备金承担。
+// **本路径已于 2026-09-01 实测确证。** 一次真实的 ETH-USD-SWAP 全仓爆仓拿到完整
+// 账单链，与逐仓**不是同一套**：
+//
+//	                  逐仓          全仓
+//	阶梯减仓          subType 101   subType 100
+//	全部强平          subType 105   subType 104
+//	穿仓补偿          subType 108   subType 108（type=10）
+//	损失落点          仓位保证金    现金余额（balChg 非零，posBalChg 恒为 0）
+//	账单的 pnl 字段   纯盈亏        **含罚金**
+//
+// 最后一行是个陷阱：逐仓账单的 pnl 与真实盈亏逐位相同，罚金要靠保证金对账才反推
+// 得出；而全仓账单的 pnl 把罚金折了进去。拿同一套解析去读两种账单会把罚金算重
+// 或算漏。本库的 Liquidation 把 Pnl 与 Penalty 分开报，两种模式一致。
+//
+// **全仓同样走阶梯减仓。** 实测 25577 张（二档）先减到 8000 张（一档上限），
+// 90 秒后仍未获救，再全平。所以此处与逐仓同构：能降档就先降档，降无可降才全平。
 //
 // 与逐仓的两处必然差异：
 //
 //	损失的来源  逐仓损失的是划入仓位的保证金，现金不动；全仓的保证金从未离开现金，
 //	            故盈亏、手续费与罚金直接落在现金余额上
-//	封顶的口径  逐仓封顶为该仓位的保证金，全仓封顶为该币种的全仓权益
+//	封顶的口径  逐仓封顶为该仓位的保证金，全仓封顶为该币种的现金
 //
-// **阶梯减仓在全仓下未建模**：本路径一律全平该币种的全部全仓仓位。真实 OKX 在
-// 全仓下也会先做阶梯减仓，那样的结果比全平温和；本实现偏保守，回测里表现为
-// 高估爆仓的杀伤力，而不是低估。见 docs/roadmap.md 的覆盖缺口。
+// **多个全仓仓位时先减哪一个尚未观察到**（实测那次该币种下只有一个仓位）。
+// 此处按 (instId, posSide) 排序取第一个可降档的，使结果可复现。
 func (s *Simulator) checkCrossLiquidation(ccy string, ts int64) ([]Liquidation, error) {
 	// 判据每根 K 线都要跑，走精简版：跳过初始保证金与全仓强平价，它们判据用不上。
 	cm, err := s.crossMetrics(ccy, false)
@@ -448,15 +472,51 @@ func (s *Simulator) checkCrossLiquidation(ccy string, ts int64) ([]Liquidation, 
 	if !cm.IsLiquidatable() {
 		return nil, nil
 	}
-	// 真要强平了才补齐——下面的 Liquidation 里要报出触发时的保证金率，
-	// 而精简版里的其余字段是零，不该流到结果里去
-	if cm, err = s.CrossMetricsOf(ccy); err != nil {
-		return nil, err
-	}
 
+	canceled := s.cancelCrossOrders(ccy)
+	var out []Liquidation
+
+	for {
+		cur, err := s.crossMetrics(ccy, false)
+		if err != nil {
+			return nil, err
+		}
+		if !cur.HasPosition || !cur.IsLiquidatable() {
+			break // 已被救回，或该币种下已无全仓仓位
+		}
+
+		key, target, err := s.nextCrossReduction(ccy)
+		if err != nil {
+			return nil, err
+		}
+		if target == nil {
+			liqs, err := s.liquidateCrossAll(ccy, cur, ts)
+			if err != nil {
+				return nil, err
+			}
+			if len(liqs) > 0 {
+				liqs[0].CanceledOrders = canceled
+			}
+			out = append(out, liqs...)
+			break
+		}
+
+		liq, err := s.closeCrossPortion(key, *target, cur, ts)
+		if err != nil {
+			return nil, err
+		}
+		liq.CanceledOrders = canceled
+		canceled = nil // 撤单只记在第一条上
+		out = append(out, liq)
+	}
+	return out, nil
+}
+
+// crossKeys 返回某结算币种下的全部全仓仓位，按 (instId, posSide) 排序使结果可复现。
+func (s *Simulator) crossKeys(ccy string) ([]positionKey, error) {
 	keys := make([]positionKey, 0, len(s.pos))
 	for k, p := range s.pos {
-		if p.MgnMode != types.MgnCross {
+		if p.MgnMode != types.MgnCross || p.IsEmpty() {
 			continue
 		}
 		inst, err := s.cfg.RefData.Instrument(p.InstID)
@@ -467,81 +527,164 @@ func (s *Simulator) checkCrossLiquidation(ccy string, ts int64) ([]Liquidation, 
 			keys = append(keys, k)
 		}
 	}
-	if len(keys) == 0 {
-		return nil, nil
-	}
-	// 按 instId 与方向排序，使同一状态下的强平顺序可复现
 	sort.Slice(keys, func(i, j int) bool {
 		if keys[i].instID != keys[j].instID {
 			return keys[i].instID < keys[j].instID
 		}
 		return keys[i].posSide < keys[j].posSide
 	})
+	return keys, nil
+}
 
-	canceled := s.cancelCrossOrders(ccy)
-
-	out := make([]Liquidation, 0, len(keys))
-	var charge decimal.Decimal
-	for _, key := range keys {
-		pos := s.pos[key]
-		inst, err := s.cfg.RefData.Instrument(key.instID)
+// nextCrossReduction 挑出下一个可降档的全仓仓位；都降无可降时 target 为 nil。
+func (s *Simulator) nextCrossReduction(ccy string) (positionKey, *refdata.PositionTier, error) {
+	keys, err := s.crossKeys(ccy)
+	if err != nil {
+		return positionKey{}, nil, err
+	}
+	for _, k := range keys {
+		pos := s.pos[k]
+		inst, err := s.cfg.RefData.Instrument(k.instID)
 		if err != nil {
-			return nil, err
+			return positionKey{}, nil, err
 		}
-		rate, err := s.fees.Rate(inst)
+		tbl, err := refdata.TierTableFor(s.cfg.RefData, inst, types.MgnCross)
 		if err != nil {
-			return nil, err
+			return positionKey{}, nil, err
 		}
 		tier, err := s.tierOf(pos, inst)
 		if err != nil {
+			return positionKey{}, nil, err
+		}
+		if t := nextLowerTier(tbl, tier.Tier); t != nil {
+			if keep := refdata.FloorToStep(t.MaxSz, inst.LotSz); pos.AbsPos().GreaterThan(keep) {
+				return k, t, nil
+			}
+		}
+	}
+	return positionKey{}, nil, nil
+}
+
+// closeCrossPortion 把一个全仓仓位减到目标档位，损失落在现金上。
+func (s *Simulator) closeCrossPortion(key positionKey, target refdata.PositionTier,
+	cm CrossMetrics, ts int64) (Liquidation, error) {
+
+	pos := s.pos[key]
+	inst, err := s.cfg.RefData.Instrument(key.instID)
+	if err != nil {
+		return Liquidation{}, err
+	}
+	before, err := s.tierOf(pos, inst)
+	if err != nil {
+		return Liquidation{}, err
+	}
+	keep := refdata.FloorToStep(target.MaxSz, inst.LotSz)
+	liq, err := s.settleCrossClose(key, pos.AbsPos().Sub(keep), cm, ts)
+	if err != nil {
+		return Liquidation{}, err
+	}
+	liq.Kind = LiqPartial
+	liq.TierBefore = before.Tier
+	liq.TierAfter = target.Tier
+	if p, ok := s.pos[key]; ok {
+		if after, err := s.tierOf(p, inst); err == nil {
+			liq.TierAfter = after.Tier
+		}
+	}
+	return liq, nil
+}
+
+// liquidateCrossAll 全平某币种下剩余的全部全仓仓位。
+func (s *Simulator) liquidateCrossAll(ccy string, cm CrossMetrics,
+	ts int64) ([]Liquidation, error) {
+
+	keys, err := s.crossKeys(ccy)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Liquidation, 0, len(keys))
+	for _, k := range keys {
+		inst, err := s.cfg.RefData.Instrument(k.instID)
+		if err != nil {
 			return nil, err
 		}
-
-		px := s.markOf(key.instID, pos.AvgPx)
-		sz := pos.AbsPos()
-		nom := notional(inst, sz, px)
-		pnl := realizedPnl(inst, pos.SignedPos(), sz, pos.AvgPx, px)
-		fee := nom.Mul(rate.Taker.Abs()).Neg()
-		penalty := nom.Mul(tier.MMR).Neg()
-		charge = charge.Add(pnl).Add(fee).Add(penalty)
-
-		out = append(out, Liquidation{
-			InstID: key.instID, PosSide: key.posSide, MgnMode: types.MgnCross,
-			Kind: LiqFull, Sz: sz, Px: px, Pnl: pnl, Fee: fee, Penalty: penalty,
-			MgnRatioBefore: cm.MgnRatio, TierBefore: tier.Tier, TierAfter: tier.Tier,
-			Ts: ts,
-		})
-
-		pos.RealizedPnl = pos.RealizedPnl.Add(pnl)
-		pos.Fee = pos.Fee.Add(fee)
-		pos.LiqPenalty = pos.LiqPenalty.Add(penalty)
-		pos.UTime = ts
-		delete(s.pos, key)
+		tier, err := s.tierOf(s.pos[k], inst)
+		if err != nil {
+			return nil, err
+		}
+		liq, err := s.settleCrossClose(k, s.pos[k].AbsPos(), cm, ts)
+		if err != nil {
+			return nil, err
+		}
+		liq.Kind = LiqFull
+		liq.TierBefore, liq.TierAfter = tier.Tier, tier.Tier
+		out = append(out, liq)
 	}
-	out[len(out)-1].CanceledOrders = canceled
+	return out, nil
+}
 
-	// 现金承接全部盈亏、手续费与罚金；跌破零的部分由风险准备金承担，
-	// 持仓方的损失封顶为该币种的全仓权益。
-	before := s.cash[ccy]
+// settleCrossClose 平掉一个全仓仓位的 sz 张，把盈亏、手续费与罚金落在现金上。
+//
+// 罚金率按【本笔平掉的张数】自己查档，与逐仓同规则，见 reduceToTier 的说明。
+//
+// 现金跌破零的部分由风险准备金承担：实测那次现金先变成 -0.0083549605660383，
+// 随后一条 type=10 subType=108 的账单把它补回恰好 0。持仓方的损失封顶为该币种
+// 的现金余额。
+func (s *Simulator) settleCrossClose(key positionKey, sz decimal.Decimal,
+	cm CrossMetrics, ts int64) (Liquidation, error) {
+
+	pos := s.pos[key]
+	inst, err := s.cfg.RefData.Instrument(key.instID)
+	if err != nil {
+		return Liquidation{}, err
+	}
+	rate, err := s.fees.Rate(inst)
+	if err != nil {
+		return Liquidation{}, err
+	}
+	tbl, err := refdata.TierTableFor(s.cfg.RefData, inst, types.MgnCross)
+	if err != nil {
+		return Liquidation{}, err
+	}
+	penTier, err := tbl.Lookup(sz)
+	if err != nil {
+		return Liquidation{}, err
+	}
+
+	px := s.markOf(key.instID, pos.AvgPx)
+	nom := notional(inst, sz, px)
+	pnl := realizedPnl(inst, pos.SignedPos(), sz, pos.AvgPx, px)
+	fee := nom.Mul(rate.Taker.Abs()).Neg()
+	penalty := nom.Mul(penTier.MMR).Neg()
+	charge := pnl.Add(fee).Add(penalty)
+
+	before := s.cash[inst.SettleCcy]
 	after := before.Add(charge)
 	var excess decimal.Decimal
 	if after.IsNegative() {
 		excess = after.Neg()
 		after = decimal.Zero
 	}
-	s.cash[ccy] = after
+	s.cash[inst.SettleCcy] = after
 
-	// 损失与超额按各仓位的消耗占比分摊。同样先乘后除——先算出占比再乘，
-	// 会把比例的舍入误差乘上整笔损失放大一遍。见 computeMarginDelta 的说明。
-	loss := before.Sub(after)
-	if total := charge.Neg(); total.IsPositive() {
-		for i := range out {
-			consumed := out[i].Pnl.Add(out[i].Fee).Add(out[i].Penalty).Neg()
-			out[i].Loss = div(loss.Mul(consumed), total)
-			out[i].Excess = div(excess.Mul(consumed), total)
-		}
+	sign := signOf(pos.SignedPos())
+	pos.RealizedPnl = pos.RealizedPnl.Add(pnl)
+	pos.Fee = pos.Fee.Add(fee)
+	pos.LiqPenalty = pos.LiqPenalty.Add(penalty)
+	pos.Pos = pos.AbsPos().Sub(sz).Mul(sign)
+	pos.UTime = ts
+	if pos.AbsPos().IsZero() {
+		delete(s.pos, key)
+	} else {
+		s.pos[key] = pos
 	}
-	return out, nil
+
+	return Liquidation{
+		InstID: key.instID, PosSide: key.posSide, MgnMode: types.MgnCross,
+		Sz: sz, Px: px, Pnl: pnl, Fee: fee, Penalty: penalty,
+		Loss: before.Sub(after), Excess: excess,
+		MgnRatioBefore: cm.MgnRatio, Ts: ts,
+	}, nil
 }
 
 // cancelCrossOrders 撤销某结算币种下的全部全仓挂单，返回被撤销的委托 ID。
