@@ -219,6 +219,10 @@ func (s *Simulator) PlaceOrder(o Order) (PlaceResult, error) {
 	if o.OrdType == "" {
 		o.OrdType = types.OrdLimit
 	}
+	if o.TdMode == "" {
+		// 留空即逐仓，与 Fill 同规则，见 Config.PosMode 的说明。
+		o.TdMode = types.TdIsolated
+	}
 	if !o.OrdType.Valid() {
 		return PlaceResult{}, okxerr.New(okxerr.CodeParamError,
 			"ordType: 非法的委托类型 %q", o.OrdType)
@@ -381,8 +385,10 @@ func (s *Simulator) Advance(b Bar) (StepResult, error) {
 			"markPx: %s 在 ts=%d 没有标记价。"+
 				"退回用最新成交价顶替会让插针扫掉本不该爆的仓位，本库宁可报错也不悄悄降级。"+
 				"确实拿不到标记价数据时，把 Config.AllowMarkPxFallback 设为真表示"+
-				"你接受这份偏差。若回测起点早于 2020-01-01（港时），标记价历史"+
-				"很可能根本不存在——OKX 的标记价 K 线一律不早于那一天，而成交价更长",
+				"你接受这份偏差。若回测起点在 2020 年初之前，标记价历史很可能"+
+				"根本不存在——OKX 的标记价 K 线比成交价短一截，**且边界随周期粒度"+
+				"变化**（实测 1D 约 2020-01-01 港时、1m 约 2020-01-03 港时），"+
+				"详见 docs/okx-rules.md §4",
 			b.InstID, b.Ts)
 	}
 

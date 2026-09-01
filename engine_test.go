@@ -650,3 +650,66 @@ func TestAffectsAccountStateBothDirections(t *testing.T) {
 			"这正是下游漏接、在空簿上按旧状态继续跑的那条路径")
 	}
 }
+
+// TestZeroConfigDefaultsToIsolatedHedge 钉住「什么都不设」时的默认组合。
+//
+//	PosMode 留空  ->  开平仓模式（long_short_mode），与 OKX 账户一致
+//	TdMode  留空  ->  逐仓
+//
+// 这是回测引擎最常用的组合。两处的性质不同，值得分开记：
+//
+//	PosMode  v1.1.0 起由买卖模式改为开平仓模式，**是破坏性变更**——但破得响亮：
+//	         开平仓模式要求每笔成交显式给 long 或 short，留空当场报错，
+//	         此前依赖默认值的调用方会立刻看到错误而不是拿到一批口径不同的结果
+//	TdMode   **纯增量**：此前留空直接报错，所以没有任何既有行为因此改变
+func TestZeroConfigDefaultsToIsolatedHedge(t *testing.T) {
+	s, err := New(Config{RefData: refdata.MustEmbedded()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.PosMode(); got != types.LongShortMode {
+		t.Fatalf("零配置的持仓方式 = %q，期望开平仓模式", got)
+	}
+	if err := s.Deposit("USDT", dec("100000")); err != nil {
+		t.Fatal(err)
+	}
+
+	// TdMode 留空即逐仓
+	fr, err := s.Fill(Fill{
+		InstID: "BTC-USDT-SWAP", Side: types.Buy, PosSide: types.PosLong,
+		Sz: dec("1"), Px: dec("78000"), ExecType: types.Taker, Ts: 1,
+	})
+	if err != nil {
+		t.Fatalf("留空 TdMode 应当按逐仓处理: %v", err)
+	}
+	if fr.Fill.TdMode != types.TdIsolated {
+		t.Errorf("规范化后的 TdMode = %q，期望逐仓", fr.Fill.TdMode)
+	}
+	p, ok := s.PositionOf("BTC-USDT-SWAP", types.PosLong)
+	if !ok {
+		t.Fatal("应当建仓")
+	}
+	if p.MgnMode != types.MgnIsolated {
+		t.Errorf("仓位的保证金模式 = %q，期望逐仓", p.MgnMode)
+	}
+	if !p.Margin.IsPositive() {
+		t.Error("逐仓仓位应当划入保证金")
+	}
+
+	// PosSide 留空在开平仓模式下必须报错——这就是「破得响亮」那一句的凭据
+	if _, err := s.Fill(Fill{
+		InstID: "BTC-USDT-SWAP", Side: types.Buy, Sz: dec("1"),
+		Px: dec("78000"), ExecType: types.Taker, Ts: 2,
+	}); !okxerr.HasCode(err, okxerr.CodeParamError) {
+		t.Errorf("开平仓模式下留空 PosSide 应当报错，实为 %v——"+
+			"若这里不报错，翻默认值就成了静默的行为变更", err)
+	}
+	// 挂单那侧同规则
+	if _, err := s.PlaceOrder(Order{
+		OrdID: "o1", InstID: "BTC-USDT-SWAP", Side: types.Buy,
+		PosSide: types.PosLong, OrdType: types.OrdLimit,
+		Px: dec("60000"), Sz: dec("1"), Ts: 3,
+	}); err != nil {
+		t.Errorf("挂单留空 TdMode 也应当按逐仓处理: %v", err)
+	}
+}

@@ -14,7 +14,15 @@ type Config struct {
 	// AcctLv 账户模式，默认 acctLv=2 现货合约模式。
 	AcctLv types.AcctLv
 
-	// PosMode 持仓方式，默认买卖模式。
+	// PosMode 持仓方式，**默认开平仓模式**（long_short_mode）。
+	//
+	// 与 OKX 一致：实测模拟盘账户的 posMode 即为 long_short_mode，而回测引擎
+	// 最常用的组合也是「逐仓 + 开平仓」。
+	//
+	// ⚠️ v1.1.0 起由买卖模式改为此值。这是个破坏性变更，但**破得响亮**：
+	// 开平仓模式要求每笔成交显式给出 long 或 short，留空会当场报错而不是
+	// 悄悄按 net 处理。所以此前依赖默认值的调用方会立刻看到错误，
+	// 而不是拿到一批口径不同的结果。
 	PosMode types.PosMode
 
 	// RefData 规则数据源。回测请用不可变的 refdata.Snapshot，
@@ -48,10 +56,11 @@ type Config struct {
 	// 标记价，可避免；而它改变的是「强平有没有发生」这个离散事件。资金费落在
 	// 后一只手：费率只保留约 3 个月，超窗口不可避免，且造成的是连续偏差。
 	//
-	// ⚠️ **2020-01-01（港时）是条硬线。** 更早上线的合约，标记价历史一律被截到那天，
-	// 而成交价历史更长：BTC-USD-SWAP 差 379 天，BTC/ETH-USDT-SWAP 各差约一个月。
+	// ⚠️ **标记价历史比成交价短一截，边界在 2020 年初，且随周期粒度变化。**
+	// 实测 ETH-USDT-SWAP：1D 上两者差 32 天（成交价 2019-11-30、标记价
+	// 2020-01-01 港时），1m 上差 8 天 16 小时（2019-12-25、2020-01-03 港时）。
 	// 从合约上线跑全历史回测会撞上这段，那时降级是**不可避免**的——把这个开关
-	// 打开是正当的，代价见上。
+	// 打开是正当的，代价见上。详见 docs/okx-rules.md §4。
 	//
 	// 确实拿不到标记价数据、愿意承担这份偏差时才打开它——**并且知道此后的强平结果
 	// 不可信**。标记价来自 OKX 的 mark-price-candles 接口，与普通 K 线是两套序列。
@@ -101,7 +110,7 @@ func New(cfg Config) (*Simulator, error) {
 		return nil, okxerr.New(okxerr.CodeParamError, "acctLv: 非法的账户模式 %q", cfg.AcctLv)
 	}
 	if cfg.PosMode == "" {
-		cfg.PosMode = types.NetMode
+		cfg.PosMode = types.LongShortMode
 	}
 	if !cfg.PosMode.Valid() {
 		return nil, okxerr.New(okxerr.CodeParamError, "posMode: 非法的持仓方式 %q", cfg.PosMode)
@@ -345,6 +354,11 @@ func (s *Simulator) Fill(f Fill) (FillResult, error) {
 	}
 	if !f.Side.Valid() {
 		return FillResult{}, okxerr.New(okxerr.CodeParamError, "side: 非法方向 %q", f.Side)
+	}
+	if f.TdMode == "" {
+		// 留空即逐仓——与 PosMode 的默认配套，「逐仓 + 开平仓」是最常用的组合。
+		// 这一条是纯增量：此前留空直接报错，所以没有任何既有行为因此改变。
+		f.TdMode = types.TdIsolated
 	}
 	mgnMode, ok := f.TdMode.MgnMode()
 	if !ok {
