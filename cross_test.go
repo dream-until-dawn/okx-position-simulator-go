@@ -779,3 +779,86 @@ func putPos(t *testing.T, s *Simulator, instID string, mgn types.MgnMode,
 	}
 	s.SetMarkPx(instID, dec(avgPx))
 }
+
+// TestCrossMgnRatioHasStructuralFloor 锁定一条推得的、但影响很大的性质：
+//
+//	全仓保证金率的下限 = 1 / (该档最高杠杆 × (维持保证金率 + 吃单费率))
+//
+// 开仓时权益最少也要等于初始保证金 `名义/最高杠杆`，而保证金率的分母是
+// `名义 × 维持保证金率 + 平仓手续费`。两者都正比于名义价值，**比值由档位表锁死**
+// ——放多少钱、加多少仓、烧多少手续费都改不了它。
+//
+// 这条性质有两个实际后果：
+//
+//	一  全仓账户不可能在没有不利波动的情况下被强平。ETH-USD 二档算出 2.728，
+//	    实测起点 2.73~2.76 与之相符
+//	二  触发所需的不利波动幅度 = 1/最高杠杆 − (维持保证金率 + 吃单费率)。
+//	    一档 100x 只需 0.55%，二档 66.66x 需 0.95% —— 用满杠杆反而离强平更近
+//
+// 若哪天本库算出低于该下限的保证金率，那一定是分子分母口径错位（例如分母漏了
+// 平仓手续费，或初始保证金按标记价而非开仓价算），而不是真的更危险。
+func TestCrossMgnRatioHasStructuralFloor(t *testing.T) {
+	fx := loadCrossFixture(t)
+	snap := crossSnapshot(t, fx)
+	const instID = "ETH-USDT-SWAP"
+	inst, err := snap.Instrument(instID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tbl, err := refdata.TierTableFor(snap, inst, types.MgnCross)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taker := dec(fx.FeeRate.Taker).Abs()
+
+	// 逐档验证：每档用它自己的最高杠杆开满，看保证金率是否恰好落在该档的下限
+	for _, tier := range tbl.Tiers {
+		name := "第" + decimal.NewFromInt(int64(tier.Tier)).String() + "档"
+		t.Run(name, func(t *testing.T) {
+			s, err := New(Config{PosMode: types.LongShortMode, RefData: snap})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// 张数取该档区间的中点，避免贴着边界受取整影响
+			sz := tier.MinSz.Add(tier.MaxSz).Div(decimal.NewFromInt(2))
+			sz = inst.RoundSize(sz)
+			px := dec("2500")
+			nom := notional(inst, sz, px)
+			// 恰好按该档最高杠杆备足初始保证金
+			imr := div(nom, tier.MaxLever)
+			if err := s.Deposit("USDT", imr); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.SetLeverage(instID, types.MgnCross, types.PosLong,
+				tier.MaxLever); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.SetPosition(Position{
+				InstID: instID, MgnMode: types.MgnCross, PosSide: types.PosLong,
+				Pos: sz, AvgPx: px, Lever: tier.MaxLever,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.SetMarkPx(instID, px); err != nil {
+				t.Fatal(err)
+			}
+
+			cm, err := s.CrossMetricsOf("USDT")
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := div(decimal.NewFromInt(1), tier.MaxLever.Mul(tier.MMR.Add(taker)))
+			near(t, cm.MgnRatio, want, "1e-12",
+				name+" 用满杠杆时的保证金率应恰好等于结构性下限")
+			if cm.MgnRatio.LessThan(decimal.NewFromInt(1)) {
+				t.Errorf("下限 %s 低于 1，意味着开仓即可被强平——档位表或口径有问题",
+					cm.MgnRatio)
+			}
+
+			// 触发所需的不利波动 = 1/最高杠杆 − (mmr率 + 吃单费率)
+			wantMove := div(decimal.NewFromInt(1), tier.MaxLever).Sub(tier.MMR.Add(taker))
+			gotMove := div(cm.Equity.Sub(cm.MMR.Add(cm.CloseFee)), nom)
+			near(t, gotMove, wantMove, "1e-12", name+" 触发所需的不利波动幅度")
+		})
+	}
+}

@@ -303,3 +303,137 @@ func TestInversePosCcyIsEmpty(t *testing.T) {
 		t.Errorf("反向合约的 posCcy = %q，OKX 给的是空串", views[0].PosCcy)
 	}
 }
+
+// invFundingFixture 是 testdata/conformance/inverse-funding.json 的结构。
+type invFundingFixture struct {
+	Cases []struct {
+		InstID     string          `json:"instId"`
+		MgnMode    string          `json:"mgnMode"`
+		Sz         string          `json:"sz"`
+		Px         string          `json:"px"`
+		Rate       string          `json:"rate"`
+		Amount     string          `json:"amount"`
+		BalChg     string          `json:"balChg"`
+		Bal        string          `json:"bal"`
+		Ccy        string          `json:"ccy"`
+		Instrument json.RawMessage `json:"instrument"`
+		Tiers      json.RawMessage `json:"tiers"`
+	} `json:"cases"`
+}
+
+// TestInverseFundingAgainstRealBills 锁定反向合约的资金费——金额与**落点**。
+//
+// 数据取自 2026-09-01 的一次真实结算，账户同时持有一个逐仓反向仓位与一个全仓
+// 反向仓位，一次拿到两条路径。
+//
+// **费率是独立取自 funding-rate-history 的，不是从金额反推的。** 反推会让任何
+// 公式都自洽——把 ctVal 乘错、把除法写成乘法，反推出来的率照样能把金额还原，
+// 测试却一路绿灯。这里是正向代入：已知费率 0.0001，算出金额，与账单比。
+//
+// 落点比金额更容易错，且错了不报错：
+//
+//	逐仓  扣仓位保证金，balChg 恒为 0，现金纹丝不动
+//	全仓  扣现金，balChg 等于资金费
+//
+// 全仓若照逐仓的写法去扣 Margin，会被夹零逻辑静默吞掉——资金费凭空消失，
+// 而回测照跑不误。
+func TestInverseFundingAgainstRealBills(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("testdata", "conformance", "inverse-funding.json"))
+	if err != nil {
+		t.Fatalf("读取夹具失败: %v", err)
+	}
+	var fx invFundingFixture
+	if err := json.Unmarshal(b, &fx); err != nil {
+		t.Fatalf("解析夹具失败: %v", err)
+	}
+	if len(fx.Cases) < 2 {
+		t.Fatalf("夹具应当同时含逐仓与全仓两条路径，实为 %d 条", len(fx.Cases))
+	}
+
+	var sawIso, sawCross bool
+	for _, c := range fx.Cases {
+		t.Run(c.InstID+"/"+c.MgnMode, func(t *testing.T) {
+			var inst refdata.Instrument
+			if err := json.Unmarshal(c.Instrument, &inst); err != nil {
+				t.Fatal(err)
+			}
+			var tiers []refdata.PositionTier
+			if err := json.Unmarshal(c.Tiers, &tiers); err != nil {
+				t.Fatal(err)
+			}
+			if !inst.IsInverse() {
+				t.Fatalf("%s 不是反向合约，夹具取错了", c.InstID)
+			}
+			mgnMode := types.MgnIsolated
+			if c.MgnMode == "cross" {
+				mgnMode = types.MgnCross
+			}
+			tbl, err := refdata.NewTierTable(refdata.TierKey{
+				InstType: types.InstSwap, MgnMode: mgnMode, Family: inst.InstFamily}, tiers)
+			if err != nil {
+				t.Fatal(err)
+			}
+			snap := refdata.NewSnapshotBuilder(1).AddInstruments(inst).
+				AddTierTable(tbl).SetFeeSchedule(refdata.DefaultFeeSchedule()).Build()
+			s, err := New(Config{PosMode: types.LongShortMode, RefData: snap})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// 保证金给得足够大，免得被夹零掩盖了扣减的去向
+			margin := dec("1")
+			if err := s.Deposit(inst.SettleCcy, dec("10")); err != nil {
+				t.Fatal(err)
+			}
+			pos := Position{
+				InstID: inst.InstID, MgnMode: mgnMode, PosSide: types.PosLong,
+				Pos: dec(c.Sz), AvgPx: dec(c.Px), Lever: dec("10"),
+			}
+			if mgnMode == types.MgnIsolated {
+				pos.Margin = margin
+			}
+			if err := s.SetPosition(pos); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.SetMarkPx(inst.InstID, dec(c.Px)); err != nil {
+				t.Fatal(err)
+			}
+			cashBefore := s.CashBal(inst.SettleCcy)
+
+			rs, err := s.SettleFunding(inst.InstID, Funding{Rate: dec(c.Rate)}, 1)
+			if err != nil {
+				t.Fatalf("结算资金费失败: %v", err)
+			}
+			if len(rs) != 1 {
+				t.Fatalf("应当结算一笔，实为 %d 笔", len(rs))
+			}
+
+			// 金额：正向代入独立取回的费率，与真实账单比
+			near(t, rs[0].Amount, dec(c.Amount), "1e-16",
+				"反向资金费 = ctVal x sz / 结算价 x 费率")
+			if !rs[0].Amount.IsNegative() {
+				t.Error("正费率下多头应当支付，金额须为负")
+			}
+
+			// 落点
+			after, _ := s.PositionOf(inst.InstID, types.PosLong)
+			cashChg := s.CashBal(inst.SettleCcy).Sub(cashBefore)
+			switch mgnMode {
+			case types.MgnIsolated:
+				sawIso = true
+				eq(t, cashChg, "0", "逐仓的资金费不该动现金（真实账单 balChg 恒为 0）")
+				near(t, after.Margin, margin.Add(rs[0].Amount), "1e-16",
+					"逐仓的资金费应从仓位保证金扣")
+			case types.MgnCross:
+				sawCross = true
+				near(t, cashChg, rs[0].Amount, "1e-16",
+					"全仓的资金费应从现金扣（真实账单 balChg 等于资金费）")
+				eq(t, after.Margin, "0", "全仓仓位的保证金恒为零")
+			}
+			near(t, after.Funding, rs[0].Amount, "1e-16", "累计资金费记在仓位上")
+		})
+	}
+	if !sawIso || !sawCross {
+		t.Errorf("两条路径都要覆盖：逐仓=%v 全仓=%v", sawIso, sawCross)
+	}
+}
