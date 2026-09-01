@@ -247,3 +247,60 @@ func TestCheckLiquidationCoversBothLevels(t *testing.T) {
 		}
 	}
 }
+
+// TestMarginExponentStaysBounded 钉住小数指数不随部分平仓增长。
+//
+// 这条缺陷不会报错，也不影响结果的正确性——它只是让回测**越跑越慢**。
+// 根因是 div 固定给出 -20 的指数，而 Mul 把两边指数相加：写成
+// base.Mul(div(closedSz, beforeAbs)) 的话，Position.Margin 每经历一次部分平仓
+// 就多 20 位小数，无界增长，再经 Sub/Add 永久污染现金余额。
+//
+// 实测（网格引擎那边报的，本仓已复现）：12 轮部分平仓后系数已 264 位；
+// 挂单数 16/80/160 时，5 倍挂单换来 22.8 倍耗时，pprof 指认 decimal.rescale
+// -> big.Int.Exp 占约 40% CPU。
+//
+// 网格做的全是部分平仓，正中靶心；任何做部分平仓的策略都会中招。
+func TestMarginExponentStaysBounded(t *testing.T) {
+	const rounds = 40
+	// 20 是 div 的精度，指数不该比它更负；留一点余量给成交价自带的小数位
+	const floor = -32
+
+	for _, mode := range []types.TdMode{types.TdIsolated, types.TdCross} {
+		t.Run(string(mode), func(t *testing.T) {
+			s := newSim(t, types.NetMode)
+			if err := s.Deposit("USDT", dec("5000000")); err != nil {
+				t.Fatal(err)
+			}
+			for i := 0; i < rounds; i++ {
+				// 张数取不整除的比例，逼出真实的除法余数
+				if _, err := s.Fill(Fill{
+					InstID: "BTC-USDT-SWAP", TdMode: mode, Side: types.Buy,
+					PosSide: types.PosNet, Sz: dec("3"), Px: dec("78000"),
+					ExecType: types.Taker, Ts: int64(i * 2),
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := s.Fill(Fill{
+					InstID: "BTC-USDT-SWAP", TdMode: mode, Side: types.Sell,
+					PosSide: types.PosNet, Sz: dec("1"), Px: dec("78100"),
+					ExecType: types.Taker, Ts: int64(i*2 + 1),
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			p, _ := s.PositionOf("BTC-USDT-SWAP", types.PosNet)
+			cash := s.CashBal("USDT")
+
+			for _, c := range []struct {
+				name string
+				v    decimal.Decimal
+			}{{"仓位保证金", p.Margin}, {"现金余额", cash}} {
+				if e := c.v.Exponent(); e < floor {
+					t.Errorf("%s 的小数指数 = %d（系数 %d 位），已跌破 %d——"+
+						"说明又有人写成了先除后乘，回测会越跑越慢",
+						c.name, e, len(c.v.Coefficient().String()), floor)
+				}
+			}
+		})
+	}
+}

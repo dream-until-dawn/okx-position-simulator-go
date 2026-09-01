@@ -1,0 +1,283 @@
+# 导出结构体的字段形态，逐字段冻结。
+#
+# v1.0.0 是单向门：发布 v2 就得给 module path 加 /v2 后缀，因此 v1.0 之后每一个
+# 导出字段都是永久承诺。这个库的价值主张就是「字段级与 OKX 同构」，那字段本身
+# 就是 API，比方法集更是——使用者读的、写的、序列化的都是字段。
+#
+# 为什么连 json tag 也冻：State 与 PendingOrder 这些会被存档，改 tag 会让旧存档
+# 静默读不回来，而不是报错。
+#
+# **本文件没有自动更新开关，改动必须手写。** 那点摩擦正是它生效的原因：
+# 失败信息会把该加该删的行原样打出来，照着改一遍的过程，就是「这个名字要用十年，
+# 它对吗」这一问被真正问出口的时刻。
+#
+# 格式：类型.字段 类型 `json:tag`
+
+AlgoLeg.Above bool `json:above`
+AlgoLeg.Kind string `json:kind`
+AlgoLeg.OrdPx decimal.Decimal `json:ordPx`
+AlgoLeg.Px decimal.Decimal `json:px`
+AlgoLeg.PxType types.TriggerPxType `json:pxType`
+AlgoLeg.Trailing bool `json:trailing`
+AlgoOrder.AlgoID string
+AlgoOrder.CallbackRatio decimal.Decimal
+AlgoOrder.InstID string
+AlgoOrder.OrdPx decimal.Decimal
+AlgoOrder.OrdType types.AlgoOrdType
+AlgoOrder.PosSide types.PosSide
+AlgoOrder.ReduceOnly bool
+AlgoOrder.Side types.Side
+AlgoOrder.SlOrdPx decimal.Decimal
+AlgoOrder.SlTriggerPx decimal.Decimal
+AlgoOrder.SlTriggerPxType types.TriggerPxType
+AlgoOrder.Sz decimal.Decimal
+AlgoOrder.TdMode types.TdMode
+AlgoOrder.TpOrdPx decimal.Decimal
+AlgoOrder.TpTriggerPx decimal.Decimal
+AlgoOrder.TpTriggerPxType types.TriggerPxType
+AlgoOrder.TriggerPx decimal.Decimal
+AlgoOrder.TriggerPxType types.TriggerPxType
+AlgoOrder.Ts int64
+AlgoPlaceResult.AlgoID string
+AlgoPlaceResult.Frozen decimal.Decimal
+AlgoPlaceResult.State types.AlgoState
+AlgoTrigger.AlgoID string
+AlgoTrigger.Fill *okxsim.FillResult
+AlgoTrigger.InstID string
+AlgoTrigger.Leg string
+AlgoTrigger.OrdID string
+AlgoTrigger.OrdType types.AlgoOrdType
+AlgoTrigger.Px decimal.Decimal
+AlgoTrigger.Reason string
+AlgoTrigger.Ts int64
+Balance.AvailBal decimal.Decimal
+Balance.AvailEq decimal.Decimal
+Balance.CashBal decimal.Decimal
+Balance.Ccy string
+Balance.CrossUpl decimal.Decimal
+Balance.Eq decimal.Decimal
+Balance.FrozenBal decimal.Decimal
+Balance.IMR decimal.Decimal
+Balance.IsoEq decimal.Decimal
+Balance.IsoUpl decimal.Decimal
+Balance.MMR decimal.Decimal
+Balance.MgnRatio decimal.Decimal
+Balance.OrdFrozen decimal.Decimal
+Balance.Upl decimal.Decimal
+BalanceView.AvailBal string `json:availBal`
+BalanceView.AvailEq string `json:availEq`
+BalanceView.CashBal string `json:cashBal`
+BalanceView.Ccy string `json:ccy`
+BalanceView.DisEq string `json:disEq`
+BalanceView.Eq string `json:eq`
+BalanceView.FrozenBal string `json:frozenBal`
+BalanceView.Imr string `json:imr`
+BalanceView.IsoEq string `json:isoEq`
+BalanceView.IsoUpl string `json:isoUpl`
+BalanceView.MgnRatio string `json:mgnRatio`
+BalanceView.Mmr string `json:mmr`
+BalanceView.OrdFrozen string `json:ordFrozen`
+BalanceView.Upl string `json:upl`
+Bar.Funding *okxsim.Funding
+Bar.High decimal.Decimal
+Bar.IdxPx decimal.Decimal
+Bar.InstID string
+Bar.Last decimal.Decimal
+Bar.Low decimal.Decimal
+Bar.MarkPx decimal.Decimal
+Bar.Ts int64
+Cancellation.Detail string
+Cancellation.InstID string
+Cancellation.OrdID string
+Cancellation.Reason okxsim.CancelReason
+Config.AcctLv types.AcctLv
+Config.DefaultLever decimal.Decimal
+Config.FeeSchedule *refdata.FeeSchedule
+Config.PosMode types.PosMode
+Config.RefData refdata.Provider
+Config.RequireMarkPx bool
+CrossMetrics.CashBal decimal.Decimal
+CrossMetrics.Ccy string
+CrossMetrics.CloseFee decimal.Decimal
+CrossMetrics.Equity decimal.Decimal
+CrossMetrics.HasPosition bool
+CrossMetrics.IMR decimal.Decimal
+CrossMetrics.LiqPx decimal.Decimal
+CrossMetrics.MMR decimal.Decimal
+CrossMetrics.MgnRatio decimal.Decimal
+CrossMetrics.Upl decimal.Decimal
+Fill.ExecType types.ExecType
+Fill.InstID string
+Fill.OrdID string
+Fill.PosSide types.PosSide
+Fill.Px decimal.Decimal
+Fill.Side types.Side
+Fill.Sz decimal.Decimal
+Fill.TdMode types.TdMode
+Fill.Ts int64
+FillResult.After okxsim.Position
+FillResult.Before okxsim.Position
+FillResult.ClosedSz decimal.Decimal
+FillResult.Fee decimal.Decimal
+FillResult.Fill okxsim.Fill
+FillResult.OpenedSz decimal.Decimal
+FillResult.Pnl decimal.Decimal
+FillResult.Reversed bool
+Funding.Px decimal.Decimal
+Funding.Rate decimal.Decimal
+FundingResult.Amount decimal.Decimal
+FundingResult.InstID string
+FundingResult.Notional decimal.Decimal
+FundingResult.PosSide types.PosSide
+FundingResult.Px decimal.Decimal
+FundingResult.Rate decimal.Decimal
+FundingResult.Ts int64
+LeverageSetting.InstID string `json:instId`
+LeverageSetting.Lever decimal.Decimal `json:lever`
+LeverageSetting.MgnMode types.MgnMode `json:mgnMode`
+LeverageSetting.PosSide types.PosSide `json:posSide`
+Liquidation.CanceledOrders []string
+Liquidation.Excess decimal.Decimal
+Liquidation.Fee decimal.Decimal
+Liquidation.InstID string
+Liquidation.Kind okxsim.LiquidationKind
+Liquidation.Loss decimal.Decimal
+Liquidation.MgnMode types.MgnMode
+Liquidation.MgnRatioAfter decimal.Decimal
+Liquidation.MgnRatioBefore decimal.Decimal
+Liquidation.Penalty decimal.Decimal
+Liquidation.Pnl decimal.Decimal
+Liquidation.PosSide types.PosSide
+Liquidation.Px decimal.Decimal
+Liquidation.Sz decimal.Decimal
+Liquidation.TierAfter int
+Liquidation.TierBefore int
+Liquidation.Ts int64
+MaxSize.MaxBuy decimal.Decimal
+MaxSize.MaxSell decimal.Decimal
+Metrics.BePx decimal.Decimal
+Metrics.BkPx decimal.Decimal
+Metrics.CloseFee decimal.Decimal
+Metrics.Equity decimal.Decimal
+Metrics.HasPosition bool
+Metrics.IMR decimal.Decimal
+Metrics.LiqPx decimal.Decimal
+Metrics.MMR decimal.Decimal
+Metrics.MMRRate decimal.Decimal
+Metrics.MarkPx decimal.Decimal
+Metrics.MgnRatio decimal.Decimal
+Metrics.Notional decimal.Decimal
+Metrics.Qty decimal.Decimal
+Metrics.Tier int
+Metrics.UPL decimal.Decimal
+Metrics.UPLRatio decimal.Decimal
+Metrics.UplLastPx decimal.Decimal
+Metrics.UplRatioLastPx decimal.Decimal
+Order.InstID string
+Order.OrdID string
+Order.OrdType types.OrdType
+Order.PosSide types.PosSide
+Order.Px decimal.Decimal
+Order.ReduceOnly bool
+Order.Side types.Side
+Order.Sz decimal.Decimal
+Order.TdMode types.TdMode
+Order.Ts int64
+OrderCost.Ccy string
+OrderCost.CloseSz decimal.Decimal
+OrderCost.Fee decimal.Decimal
+OrderCost.Frozen decimal.Decimal
+OrderCost.Lever decimal.Decimal
+OrderCost.Margin decimal.Decimal
+OrderCost.Notional decimal.Decimal
+OrderCost.OpenSz decimal.Decimal
+OrderReq.InstID string
+OrderReq.PosSide types.PosSide
+OrderReq.Px decimal.Decimal
+OrderReq.Side types.Side
+OrderReq.Sz decimal.Decimal
+OrderReq.TdMode types.TdMode
+PendingAlgo.AlgoID string `json:algoId`
+PendingAlgo.Extreme decimal.Decimal `json:extreme`
+PendingAlgo.Legs []okxsim.AlgoLeg `json:legs`
+PendingAlgo.Order okxsim.AlgoOrder `json:order`
+PendingAlgo.TriggerPx decimal.Decimal `json:triggerPx`
+PendingOrder.Cost okxsim.OrderCost
+PendingOrder.OrdID string
+PendingOrder.Order okxsim.Order
+PendingOrder.Req okxsim.OrderReq
+PlaceResult.Cost okxsim.OrderCost
+PlaceResult.Detail string
+PlaceResult.Fills []okxsim.FillResult
+PlaceResult.OrdID string
+PlaceResult.Reason okxsim.CancelReason
+PlaceResult.State types.OrdState
+Position.AvgPx decimal.Decimal
+Position.CTime int64
+Position.Fee decimal.Decimal
+Position.Funding decimal.Decimal
+Position.InstID string
+Position.Lever decimal.Decimal
+Position.LiqPenalty decimal.Decimal
+Position.Margin decimal.Decimal
+Position.MgnMode types.MgnMode
+Position.Pos decimal.Decimal
+Position.PosSide types.PosSide
+Position.RealizedPnl decimal.Decimal
+Position.UTime int64
+PositionView.Adl string `json:adl`
+PositionView.AvailPos string `json:availPos`
+PositionView.AvgPx string `json:avgPx`
+PositionView.BePx string `json:bePx`
+PositionView.CTime string `json:cTime`
+PositionView.Ccy string `json:ccy`
+PositionView.Fee string `json:fee`
+PositionView.FundingFee string `json:fundingFee`
+PositionView.IdxPx string `json:idxPx`
+PositionView.Imr string `json:imr`
+PositionView.InstID string `json:instId`
+PositionView.InstType string `json:instType`
+PositionView.Last string `json:last`
+PositionView.Lever string `json:lever`
+PositionView.LiqPenalty string `json:liqPenalty`
+PositionView.LiqPx string `json:liqPx`
+PositionView.Margin string `json:margin`
+PositionView.MarkPx string `json:markPx`
+PositionView.MgnMode string `json:mgnMode`
+PositionView.MgnRatio string `json:mgnRatio`
+PositionView.Mmr string `json:mmr`
+PositionView.NotionalUsd string `json:notionalUsd`
+PositionView.Pnl string `json:pnl`
+PositionView.Pos string `json:pos`
+PositionView.PosCcy string `json:posCcy`
+PositionView.PosID string `json:posId`
+PositionView.PosSide string `json:posSide`
+PositionView.RealizedPnl string `json:realizedPnl`
+PositionView.TradeID string `json:tradeId`
+PositionView.UTime string `json:uTime`
+PositionView.Upl string `json:upl`
+PositionView.UplLastPx string `json:uplLastPx`
+PositionView.UplRatio string `json:uplRatio`
+PositionView.UplRatioLastPx string `json:uplRatioLastPx`
+PositionView.UsdPx string `json:usdPx`
+Shortfall.Available decimal.Decimal
+Shortfall.Ccy string
+Shortfall.Missing decimal.Decimal
+Shortfall.Required decimal.Decimal
+ShortfallError.Shortfall okxsim.Shortfall
+State.Cash map[string]decimal.Decimal `json:cash`
+State.IndexPx map[string]decimal.Decimal `json:indexPx,omitempty`
+State.LastPx map[string]decimal.Decimal `json:lastPx,omitempty`
+State.Leverage []okxsim.LeverageSetting `json:leverage,omitempty`
+State.MarkPx map[string]decimal.Decimal `json:markPx,omitempty`
+State.PendingAlgos []okxsim.PendingAlgo `json:pendingAlgos,omitempty`
+State.PendingOrders []okxsim.PendingOrder `json:pendingOrders,omitempty`
+State.PosMode types.PosMode `json:posMode`
+State.Positions []okxsim.Position `json:positions`
+State.RefDataVersion int64 `json:refDataVersion`
+StepResult.AlgoTriggers []okxsim.AlgoTrigger
+StepResult.Canceled []okxsim.Cancellation
+StepResult.Fills []okxsim.FillResult
+StepResult.Fundings []okxsim.FundingResult
+StepResult.Liquidations []okxsim.Liquidation
+StepResult.Ts int64
