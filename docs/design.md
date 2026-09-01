@@ -44,6 +44,7 @@
 - **状态即纯数据**：账户状态是可 JSON 序列化 + 可深拷贝的结构体，内部不藏 channel / goroutine / 闭包。
   回测引擎做参数扫描、walk-forward、事件重放时可直接快照回滚。**必须第一天定，事后补代价极大。**
 - **默认不加锁**：回测是单线程热路径，decimal 本身已有开销。并发需求用可选的 `SyncSimulator` 包装器解决。
+  「多实例并存 + 共享只读 `refdata.Snapshot`」这一形态已由外部在 `-race` 下实测（8 goroutine × 68 次回测，0 竞态），见 [silent-risks.md](./silent-risks.md)。
 
 ## 3. 包结构
 
