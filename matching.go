@@ -71,6 +71,10 @@ type Bar struct {
 	Funding *Funding
 }
 
+// markPx 返回本步的标记价；没给就退回最新成交价。
+//
+// 这个退化是有代价的：强平判据本该看标记价，用最新成交价会让插针扫掉本不该爆的
+// 仓位。要让它变成一次响亮的失败而不是一批看着正常的错结果，见 Config.RequireMarkPx。
 func (b Bar) markPx() decimal.Decimal {
 	if b.MarkPx.IsPositive() {
 		return b.MarkPx
@@ -353,6 +357,12 @@ func (s *Simulator) Advance(b Bar) (StepResult, error) {
 		return StepResult{}, okxerr.New(okxerr.CodeParamError,
 			"low(%s) 不应高于 high(%s)", b.Low, b.High)
 	}
+	if s.cfg.RequireMarkPx && !b.MarkPx.IsPositive() {
+		return StepResult{}, okxerr.New(okxerr.CodeParamEmpty,
+			"markPx: %s 在 ts=%d 没有标记价，而 Config.RequireMarkPx 已开启。"+
+				"退回用最新成交价顶替会让插针扫掉本不该爆的仓位，"+
+				"这里宁可报错也不悄悄降级", b.InstID, b.Ts)
+	}
 
 	res := StepResult{Ts: b.Ts}
 
@@ -406,18 +416,12 @@ func (s *Simulator) Advance(b Bar) (StepResult, error) {
 
 	// 强平检查排在最后：它要看的是本步全部变动落定后的风险状况——
 	// 资金费扣过了、该成交的成交了，此刻的保证金率才是真实的。
-	liqs, err := s.checkLiquidation(b.InstID, b.Ts)
+	//
+	// 走导出的 CheckLiquidation，与自行撮合的调用方共用同一条路径。分成两份写
+	// 迟早会分岔，而分岔的表现是「内置撮合会爆仓、自己撮合不会」这种极难察觉的事。
+	liqs, err := s.CheckLiquidation(b.InstID, b.Ts)
 	if err != nil {
 		return StepResult{}, err
-	}
-	// 全仓的强平是结算币种级的：同币种下的全仓仓位共担一份权益，任一合约的行情
-	// 变动都可能把整个币种推过强平线，所以本步之后必须整体再看一眼。
-	if inst, err := s.cfg.RefData.Instrument(b.InstID); err == nil {
-		cross, err := s.checkCrossLiquidation(inst.SettleCcy, b.Ts)
-		if err != nil {
-			return StepResult{}, err
-		}
-		liqs = append(liqs, cross...)
 	}
 	res.Liquidations = liqs
 	for _, l := range liqs {

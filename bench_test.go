@@ -194,3 +194,25 @@ func mustBenchFill(b *testing.B, s *Simulator, instID string,
 		b.Fatalf("%s 建仓失败: %v", instID, err)
 	}
 }
+
+// BenchmarkAdvanceCross 盯住全仓那条判据路径的开销。
+//
+// BenchmarkAdvance 用的是逐仓仓位，全仓的判据在那里没有仓位可算，改动的收益
+// 看不见。网格这类策略常跑全仓，这条基准把它单独钉住。
+func BenchmarkAdvanceCross(b *testing.B) {
+	s := benchSim(b, types.NetMode)
+	mustBenchFill(b, s, "BTC-USDT-SWAP", types.TdCross, "4", "78000")
+	bar := Bar{
+		InstID: "BTC-USDT-SWAP", Last: decimal.NewFromInt(78000),
+		High: decimal.NewFromInt(78500), Low: decimal.NewFromInt(77500),
+		MarkPx: decimal.NewFromInt(78000),
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bar.Ts = int64(i)
+		if _, err := s.Advance(bar); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

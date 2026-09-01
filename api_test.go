@@ -37,7 +37,7 @@ func TestExportedAPIIsFrozen(t *testing.T) {
 		// —— 算法委托 ——
 		"PlaceAlgoOrder", "CancelAlgoOrder", "PendingAlgoOf", "PendingAlgos",
 		// —— 推进 ——
-		"Advance", "SettleFunding",
+		"Advance", "SettleFunding", "CheckLiquidation",
 		// —— 状态存档 ——
 		"State", "Restore",
 	}

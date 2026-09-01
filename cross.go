@@ -130,6 +130,18 @@ func (m CrossMetrics) IsLiquidatable() bool {
 // 而它的维持保证金按**标记价**（那是它此刻值多少）。实测中挂单的 imr 贡献
 // 62.625 = 5000×0.2505/20 用委托价，mmr 贡献 26.85 = 5000×0.358×0.015 用标记价。
 func (s *Simulator) CrossMetricsOf(ccy string) (CrossMetrics, error) {
+	return s.crossMetrics(ccy, true)
+}
+
+// crossMetrics 是 CrossMetricsOf 的本体，full 为 false 时跳过强平检查用不上的量。
+//
+// 用一个开关而不是抄一份精简版，是因为**判据与对外报出的保证金率必须永远一致**。
+// 抄两份的话，哪天有人改了其中一份的口径，模拟器就会出现「保证金率显示没事、
+// 却被强平了」这种对不上的事，而且不会有任何报错。
+//
+// full 只允许省掉**判据读不到的输出**：逐仓那侧的初始保证金、以及全仓强平价。
+// 任何流向 MgnRatio 的计算都不得放进这个开关后面。
+func (s *Simulator) crossMetrics(ccy string, full bool) (CrossMetrics, error) {
 	m := CrossMetrics{Ccy: ccy, CashBal: s.cash[ccy]}
 
 	// 合并张数只算一次，随后传给每个仓位复用——它遍历全部仓位，放在循环里
@@ -163,7 +175,9 @@ func (s *Simulator) CrossMetricsOf(ccy string) (CrossMetrics, error) {
 
 		m.HasPosition = true
 		m.Upl = m.Upl.Add(unrealizedPnl(inst, p.SignedPos(), p.AvgPx, markPx))
-		m.IMR = m.IMR.Add(div(nom, p.Lever))
+		if full {
+			m.IMR = m.IMR.Add(div(nom, p.Lever))
+		}
 		m.MMR = m.MMR.Add(nom.Mul(tier.MMR))
 		m.CloseFee = m.CloseFee.Add(nom.Mul(rate.Taker.Abs()))
 	}
@@ -181,7 +195,9 @@ func (s *Simulator) CrossMetricsOf(ccy string) (CrossMetrics, error) {
 		if err != nil {
 			return CrossMetrics{}, err
 		}
-		m.IMR = m.IMR.Add(o.Cost.Margin)
+		if full {
+			m.IMR = m.IMR.Add(o.Cost.Margin)
+		}
 
 		tier, err := s.pendingTier(o, inst)
 		if err != nil {
@@ -194,6 +210,10 @@ func (s *Simulator) CrossMetricsOf(ccy string) (CrossMetrics, error) {
 	m.Equity = m.CashBal.Add(m.Upl)
 	if den := m.MMR.Add(m.CloseFee); !den.IsZero() {
 		m.MgnRatio = div(m.Equity, den)
+	}
+
+	if !full {
+		return m, nil
 	}
 
 	liq, err := s.crossLiquidationPx(ccy)
