@@ -424,6 +424,22 @@ func (s *Simulator) Advance(b Bar) (StepResult, error) {
 	res.Fills = append(res.Fills, algoFills...)
 
 	for _, o := range s.triggeredOrders(b) {
+		// 触发时仓位已经没了的平仓委托要撤掉，不能拿去成交。
+		//
+		// 实测 OKX（2026-09-02 模拟盘）：持有 137.89 张全仓空头并挂着四笔
+		// buy/short，第一笔成交 137.89 张把空头平光之后，其余三笔全部被系统
+		// 撤销（cancelSource=22）。
+		//
+		// 少了这一条，那些委托会走进成交路径，而开平仓模式下 signedToOKX
+		// 取绝对值会把符号抹平——一笔 sell/long 在空仓上会开出一个**多头**。
+		if reason, ok := s.orphanedClose(o); ok {
+			delete(s.pending, o.OrdID)
+			res.Canceled = append(res.Canceled, Cancellation{
+				OrdID: o.OrdID, InstID: o.InstID,
+				Reason: CancelPositionGone, Detail: reason,
+			})
+			continue
+		}
 		fr, err := s.fillOrder(o, o.Px, types.Maker, b.Ts)
 		if err != nil {
 			// 余额不足以承接这笔成交时撤销该委托，与真实撮合中的资金校验一致。
@@ -461,6 +477,39 @@ func (s *Simulator) Advance(b Bar) (StepResult, error) {
 		}
 	}
 	return res, nil
+}
+
+// orphanedClose 报告一笔委托是否为「已无仓位可平」的平仓委托，并给出说明。
+//
+// 两类都算：
+//
+//	开平仓模式下 Side 与 PosSide 相反的委托——它只可能是平仓
+//	任何模式下的只减仓（reduceOnly）委托——下单时校验过，但仓位可能之后才没的
+//
+// 买卖模式下的普通委托不算：净持仓为零时卖出就是正当的开空，那是反手语义的
+// 一部分，已由 testdata/conformance/net-reversal.json 实测确证。
+func (s *Simulator) orphanedClose(o Order) (string, bool) {
+	isClose := o.ReduceOnly
+	if s.cfg.PosMode == types.LongShortMode {
+		isClose = isClose || isCloseFill(Fill{Side: o.Side, PosSide: o.PosSide},
+			s.cfg.PosMode)
+	}
+	if !isClose {
+		return "", false
+	}
+	side := o.PosSide
+	if s.cfg.PosMode == types.NetMode {
+		side = types.PosNet
+	}
+	pos, ok := s.PositionOf(o.InstID, side)
+	if ok && !pos.IsEmpty() {
+		return "", false
+	}
+	what := "平仓委托"
+	if o.ReduceOnly {
+		what = "只减仓委托"
+	}
+	return fmt.Sprintf("%s触发时 %s %s 已无仓位可平", what, o.InstID, side), true
 }
 
 // triggeredOrders 返回本步行情会触发的挂单，按时间优先排序。

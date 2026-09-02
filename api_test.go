@@ -279,3 +279,61 @@ func TestExportedTypeMethodsAreFrozen(t *testing.T) {
 			"v1.0 之后每个导出方法都是永久承诺", diff)
 	}
 }
+
+// TestExportedEnumValuesAreFrozen 冻结导出枚举的**取值**。
+//
+// 此前三条守卫只管方法与字段，取值一个都不管——新增一个 CancelReason
+// 全绿通过。而本库反复告诉下游「这些取值应当被穷尽地处理，漏掉一种在 Go 里
+// 没有任何编译期或运行期提示」（见 reason.go 与 docs/silent-risks.md），
+// 自己的守卫却漏了同一件事。
+//
+// 这条守卫是在补 CancelPositionGone 时发现缺的：那次新增没有惊动任何测试，
+// 而它恰恰是下游需要被惊动的那种改动。
+//
+// 取值是**比方法更硬的承诺**：方法签名变了下游编译不过，取值多一个下游照样
+// 编译、照样跑，只是有一条分支永远不进。
+func TestExportedEnumValuesAreFrozen(t *testing.T) {
+	want := []string{
+		// —— 撤单原因 ——
+		"CancelReason=user",
+		"CancelReason=post_only_would_take",
+		"CancelReason=immediate_unfilled",
+		"CancelReason=insufficient_funds",
+		"CancelReason=liquidation",
+		"CancelReason=position_gone",
+		// —— 强平方式 ——
+		"LiquidationKind=partial",
+		"LiquidationKind=full",
+	}
+	sort.Strings(want)
+
+	got := []string{}
+	for _, r := range []CancelReason{
+		CancelUser, CancelPostOnlyWouldTake, CancelImmediateUnfilled,
+		CancelInsufficientFunds, CancelLiquidation, CancelPositionGone,
+	} {
+		got = append(got, "CancelReason="+string(r))
+	}
+	for _, k := range []LiquidationKind{LiqPartial, LiqFull} {
+		got = append(got, "LiquidationKind="+string(k))
+	}
+	sort.Strings(got)
+
+	if diff := diffNames(want, got); diff != "" {
+		t.Errorf("导出枚举的取值与金文件不符：\n%s\n"+
+			"新增取值对下游是【破坏性的】——它们的 switch 会静默漏掉新分支。"+
+			"若确实要加，请连同 Describe、AffectsAccountState 的分类一起想清楚，"+
+			"并在 CHANGELOG 与 README 里写明", diff)
+	}
+
+	// 每个取值都要有中文说明，且不能落到兜底文案上——漏写说明的取值
+	// 在日志里会变成一句「未知」，那正是本库要消掉的东西。
+	for _, r := range []CancelReason{
+		CancelUser, CancelPostOnlyWouldTake, CancelImmediateUnfilled,
+		CancelInsufficientFunds, CancelLiquidation, CancelPositionGone,
+	} {
+		if d := r.Describe(); d == "" || strings.Contains(d, "未知") {
+			t.Errorf("撤单原因 %q 的 Describe 落到了兜底文案：%q", r, d)
+		}
+	}
+}

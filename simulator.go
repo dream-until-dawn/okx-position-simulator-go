@@ -389,6 +389,20 @@ func (s *Simulator) Fill(f Fill) (FillResult, error) {
 		}
 	}
 
+	// 平掉一个不存在的仓位是不可能发生的成交，报错而不是静默吞掉。
+	//
+	// applyFill 会把平仓量裁剪到持仓量（与 OKX 一致），持仓量为零时就裁成了零，
+	// 于是这笔成交什么也不做。静默的空转比报错坏：引擎报来一笔它以为成交了的
+	// 委托，模拟器却当没发生，两边的仓位从此分岔且不报错。
+	//
+	// 内置撮合走不到这里——挂单在触发前就被 orphanedClose 撤掉了，
+	// 撤单原因是 CancelPositionGone。
+	if isCloseFill(f, s.cfg.PosMode) && pos.IsEmpty() {
+		return FillResult{}, okxerr.New(okxerr.CodeParamError,
+			"%s %s 已无仓位可平，这笔 %s 平仓成交不可能发生"+
+				"（实测 OKX 会在触发前撤掉这类委托）", f.InstID, side, f.Sz)
+	}
+
 	res := applyFill(pos, f, inst, feeRate, s.cfg.PosMode)
 
 	// 当前杠杆下有一个最大持仓量，超了 OKX 会直接拒单（51004）。
