@@ -27,6 +27,12 @@ type netReversalFixture struct {
 		FillPx    string `json:"fillPx"`
 		AccFillSz string `json:"accFillSz"`
 	} `json:"flip"`
+	FlipBill struct {
+		SubType string `json:"subType"`
+		Sz      string `json:"sz"`
+		Pnl     string `json:"pnl"`
+		Fee     string `json:"fee"`
+	} `json:"flipBill"`
 	After struct {
 		Pos    string `json:"pos"`
 		AvgPx  string `json:"avgPx"`
@@ -51,13 +57,17 @@ type netReversalFixture struct {
 //  1. **一笔委托可以直接反手**——OKX 既没拒绝也没把 sz 裁到 4 张。
 //     这与开平仓模式下的「超量平仓被裁剪」（okx-rules.md §8）行为不同，
 //     两种持仓方式在这里必须分开建模
+//
 //  2. 拆分是「平掉 4、反向开出 6」，不是整笔当平仓也不是整笔当开仓
+//
 //  3. 新仓位均价重置为本笔成交价
+//
 //  4. 建仓时刻重置
 //
-// 仍未实测：账单是一条还是两条。金额上「整笔计手续费」与「拆成平仓+开仓
-// 各计」同值，只有条数与 subType 能分辨，而取数当时模拟盘的账单管线落后
-// 数小时。见 fidelity.md §4。
+//  5. **账单只有一条**，sz 就是整笔的 10 张——OKX 没有把反手拆成平仓与开仓。
+//     手续费按整笔 10 张计（-1.20771），而已实现盈亏只算平掉的 4 张
+//     （-0.832）。这两条此前只有推导，且金额上两种算法同值、对不出差别，
+//     只有账单本身能分辨
 func TestNetReversalAgainstRealFill(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join("testdata", "conformance", "net-reversal.json"))
 	if err != nil {
@@ -137,4 +147,21 @@ func TestNetReversalAgainstRealFill(t *testing.T) {
 	if after.CTime != 2000 {
 		t.Errorf("建仓时刻应重置为本笔成交时刻 2000，实为 %d", after.CTime)
 	}
+
+	// —— 账单：反手只产生一条，sz 就是整笔的 10 张 ——
+	//
+	// 这两条此前只有推导，而金额上「整笔计手续费」与「拆成平仓+开仓各计」
+	// 同值，永远对不出差别；只有账单本身能分辨。真实账单：
+	//
+	//	subType=2  sz=10  px=2415.42  pnl=-0.832  fee=-1.20771
+	if fx.FlipBill.Sz != fx.Flip.Sz {
+		t.Errorf("账单的 sz 应为整笔的 %s，实为 %s——若 OKX 拆成两条，"+
+			"这里会是 4 与 6", fx.Flip.Sz, fx.FlipBill.Sz)
+	}
+	// 手续费按【整笔 10 张】计，不是平掉的 4 张
+	near(t, res.Fee, dec(fx.FlipBill.Fee), "1e-12",
+		"反手的手续费按整笔成交计：0.1 x 10 x 2415.42 x 0.0005")
+	// 盈亏只算平掉的 4 张：整笔当平仓会算成 -2.08，整笔当开仓会漏掉这笔
+	near(t, res.Pnl, dec(fx.FlipBill.Pnl), "1e-12",
+		"已实现盈亏只计平掉的 4 张：0.1 x 4 x (2415.42 - 2417.5)")
 }
