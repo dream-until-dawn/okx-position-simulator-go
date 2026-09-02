@@ -146,6 +146,20 @@ func signedDelta(f Fill, mode types.PosMode) decimal.Decimal {
 	return sz.Neg() // 平多
 }
 
+// isCloseFill 报告一笔成交在开平仓模式下是否为平仓方向。
+//
+// 判据是 Side 与 PosSide 相反：多头卖出即平多，空头买入即平空。买卖模式没有
+// 开平之分——方向完全由净持仓与成交方向的关系决定，故恒为假。
+func isCloseFill(f Fill, mode types.PosMode) bool {
+	if mode == types.NetMode {
+		return false
+	}
+	if f.PosSide == types.PosShort {
+		return f.Side == types.Buy
+	}
+	return f.Side == types.Sell
+}
+
 // applyFill 把一笔成交作用到仓位上，返回成交后的仓位与影响明细。
 //
 // 这是仓位核算的核心。三种情形：
@@ -155,7 +169,9 @@ func signedDelta(f Fill, mode types.PosMode) decimal.Decimal {
 //	反向且超量   先平光，再以成交价反向开出剩余部分，均价重置为成交价
 //
 // 第三种即「反手」，是买卖模式特有的边界，也是本核算最容易出错的地方。
-// 开平仓模式下不会发生反手：平仓量超过持仓量属于非法委托，由上层拒绝。
+// **开平仓模式下不会走到第三种**：平仓量在进入 switch 之前已被裁剪到持仓量，
+// 与 OKX 一致（见上）。此前这里只有一句「由上层拒绝」的注释，而那个上层
+// 并不存在——超量平仓会一路走进反手分支，产出一个同方向的更大仓位。
 //
 // 部分平仓不改变开仓均价——只有加仓才做加权平均。这一点与 OKX 一致。
 func applyFill(pos Position, f Fill, inst refdata.Instrument,
@@ -167,8 +183,20 @@ func applyFill(pos Position, f Fill, inst refdata.Instrument,
 	cur := pos.SignedPos()
 	next := pos
 
-	// 手续费按成交名义价值计收，与开平方向无关
-	res.Fee = notional(inst, f.Sz.Abs(), f.Px).Mul(feeRate)
+	// 开平仓模式下平仓量不得超过持仓量——实测 OKX 直接把 sz 裁剪到持仓量后成交
+	// （§8：拿 1.50 张去平一个 0.15 张的仓位，订单记录里的 sz 就是 0.15）。
+	//
+	// 不裁剪的后果比「多平了一点」严重得多：溢出的那部分会走到下面的反手分支，
+	// 而 signedToOKX 在开平仓模式下取绝对值，符号被抹平——于是拿 10 张去平
+	// 4 张多头会得到一个 **6 张多头**。想平仓，仓位反而变大了，方向还没变，
+	// 且全程不报错。
+	if isCloseFill(f, mode) && delta.Abs().GreaterThan(cur.Abs()) {
+		delta = cur.Neg()
+	}
+
+	// 手续费按成交名义价值计收，与开平方向无关。用【裁剪后】的张数：
+	// OKX 裁的是订单本身的 sz，成交多少就收多少。
+	res.Fee = notional(inst, delta.Abs(), f.Px).Mul(feeRate)
 
 	switch {
 	case cur.IsZero() || sameSign(cur, delta):

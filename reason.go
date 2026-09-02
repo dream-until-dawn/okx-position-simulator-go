@@ -40,6 +40,16 @@ const (
 	CancelInsufficientFunds CancelReason = "insufficient_funds"
 	// CancelLiquidation 强平前撤单，以释放挂单占用的保证金。
 	CancelLiquidation CancelReason = "liquidation"
+	// CancelPositionGone 平仓方向的委托在触发时已无仓位可平，故被撤销。
+	//
+	// 实测 OKX（2026-09-02 模拟盘）：持有 137.89 张全仓空头并同时挂着四笔
+	// buy/short 委托，第一笔成交 137.89 张恰好平光空头之后，**其余三笔全部
+	// 被系统撤销**，cancelSource=22。也就是说仓位归零后这类委托会被撤掉，
+	// 而不是转为反向开仓。
+	//
+	// 网格与分批止盈最容易撞上：同一仓位挂了多层平仓单，一层成交把仓位带到
+	// 零，其余各层就在这一刻消失了。
+	CancelPositionGone CancelReason = "position_gone"
 )
 
 // AffectsAccountState 报告这次撤单是否意味着**账户状态可能已经失效**。
@@ -80,8 +90,13 @@ func (r CancelReason) AffectsAccountState() bool {
 		// 立即成交类没成交不入簿、触发时资金不足以承接这一笔。
 		return false
 	}
-	// CancelLiquidation 以及**日后新增的任何取值**都落在这里。强平会撤光该合约
-	// （全仓则是该结算币种）下的全部挂单并拿走仓位——策略手上的一切都过期了。
+	// CancelLiquidation、CancelPositionGone 以及**日后新增的任何取值**都落在
+	// 这里。强平会撤光该合约（全仓则是该结算币种）下的全部挂单并拿走仓位；
+	// 而仓位归零那一条同样是账户级的——策略若以为那层平仓单还挂着，会永远
+	// 等一个不会来的成交，正是本方法要防的那种静默失败。
+	//
+	// CancelPositionGone 是这套白名单设计的第一次兑现：它是后加的取值，
+	// 什么都不改就落进了正确的那一侧。
 	return true
 }
 
@@ -98,6 +113,8 @@ func (r CancelReason) Describe() string {
 		return "立即成交类委托无法成交，不挂入簿中"
 	case CancelInsufficientFunds:
 		return "资金不足以承接该成交"
+	case CancelPositionGone:
+		return "触发时已无仓位可平，该平仓委托被撤销"
 	case CancelLiquidation:
 		return "强平前撤单，以释放挂单占用的保证金"
 	}
